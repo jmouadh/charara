@@ -1,5 +1,7 @@
 # Charara - Documentation
 
+![Charara: CAD model and the robot as built](assets/charara-robot.jpg)
+
 This folder documents the **robot software** (`software/`: console service +
 brain runtime) and the **web console** of the Charara robot. It is
 written so that a person or an AI agent can pick up the project and work on it

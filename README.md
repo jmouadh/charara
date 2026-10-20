@@ -6,6 +6,13 @@
 ![python](https://img.shields.io/badge/python-3.11%2B-3776ab)
 ![firmware](https://img.shields.io/badge/firmware-STM32F722-03234b)
 
+[![Charara: the CAD model on the left, the robot as built on the right](Docs/assets/charara-robot.jpg)](Docs/assets/charara-robot.jpg)
+
+<sub><b>Designed, built, programmed.</b> CAD model (left) and the robot as built
+(right): four mecanum wheels on steppers, the STM32F722 driver board, the
+Raspberry Pi 4, the power stack - and, in the foreground, a printed drive
+gearbox.</sub>
+
 *Author: Mouadh Jeridi - jeridimouadh@gmail.com*
 
 **Documentation site:** <https://jmouadh.github.io/charara/>
