@@ -24,7 +24,7 @@ Software for the Raspberry Pi next to the Eurobot table, one Python package
   execute -> avoid obstacles -> repeat), no browser needed
   (`python -m software.brain --strategy <name>`).
 
-> **Full documentation:** [`Docs/00-index.md`](Docs/00-index.md) - system
+> **Full documentation:** [`Docs/index.md`](Docs/index.md) - system
 > overview, software architecture, planner & algorithms, console guide, API
 > reference, camera/vision integration, development guide and
 > [brain & strategies](Docs/08-brain-and-strategies.md).

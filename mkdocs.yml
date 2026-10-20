@@ -66,7 +66,7 @@ plugins:
   - search
 
 nav:
-  - Overview: 00-index.md
+  - Overview: index.md
   - Design:
       - System overview: 01-system-overview.md
       - Backend architecture: 02-backend-architecture.md

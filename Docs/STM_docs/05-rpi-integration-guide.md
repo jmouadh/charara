@@ -15,7 +15,7 @@ The implementation lives in the `charara` repository (`charara/charara`):
 one motion command in flight (the executor), retries reuse the `seq` and
 verify the echoed one, the deadman is armed during execution, odometry is
 fed to the estimator at 10 Hz. That side's documentation:
-`charara/charara/Docs/00-index.md`.
+`charara/charara/Docs/index.md`.
 
 ## 1. What the STM32 does and does not do
 
