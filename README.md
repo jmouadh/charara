@@ -1,4 +1,6 @@
-# Charara - autonomous Eurobot 2026 robot
+# Charara - autonomous mecanum-wheel robot
+
+**Custom electronics · STM32F722 firmware · Raspberry Pi motion planning · operator console**
 
 [![ci](https://github.com/jmouadh/charara/actions/workflows/ci.yml/badge.svg)](https://github.com/jmouadh/charara/actions/workflows/ci.yml)
 [![docs](https://github.com/jmouadh/charara/actions/workflows/pages.yml/badge.svg)](https://jmouadh.github.io/charara/)
@@ -6,7 +8,7 @@
 ![python](https://img.shields.io/badge/python-3.11%2B-3776ab)
 ![firmware](https://img.shields.io/badge/firmware-STM32F722-03234b)
 
-[![Charara: the CAD model on the left, the robot as built on the right](Docs/assets/charara-robot.jpg)](Docs/assets/charara-robot.jpg)
+[![Charara: the CAD model on the left, the robot as built on the right](Docs/assets/hero/robot-cad-and-built.jpg)](Docs/assets/hero/robot-cad-and-built.jpg)
 
 <sub><b>Designed, built, programmed.</b> CAD model (left) and the robot as built
 (right): four mecanum wheels on steppers, the STM32F722 driver board, the
@@ -17,8 +19,11 @@ gearbox.</sub>
 
 **Documentation site:** <https://jmouadh.github.io/charara/>
 
-Software for the Raspberry Pi next to the Eurobot table, one Python package
-(`software/`) with two applications:
+An autonomous mecanum-wheel robot built for the 2026 French Robotics Cup: four
+steppers driven by a custom STM32F722 board, motion planned on a Raspberry Pi 4.
+This repository holds the whole chain - firmware, planner, console, hardware
+sources and the engineering documentation - with one Python package
+(`software/`) providing two applications:
 
 * **console** - a web UI + FastAPI service to configure, calibrate, test and
   plan: place the robot, draw paths on the field, plan them (grid A*/Theta* +
@@ -57,17 +62,18 @@ flowchart LR
 The electronics are designed in-house: one board carrying the STM32F722, four
 stepper drivers with heatsinks, the power stage and the I2C / encoder
 connectors, with a small OLED for the robot status. The frame mixes
-3D-printed structural parts with aluminium plates, and the drive modules carry
-the mecanum wheels.
+3D-printed structural parts with aluminium plates, and each drive module carries
+a mecanum wheel on a stepper through a printed gearbox.
 
-[![The assembled Charara controller board](Docs/assets/hardware-electronics.jpg)](Docs/assets/hardware-electronics.jpg)
+<p align="center">
+  <a href="Docs/assets/hardware/board.jpg"><img width="32%" alt="Controller board: STM32F722, four stepper drivers under heatsinks, power stage, status OLED" src="Docs/assets/hardware/board.jpg"></a>
+  <a href="Docs/assets/hardware/drivetrain.jpg"><img width="32%" alt="Drivetrain seen from above: four stepper modules and mecanum wheels around the controller board" src="Docs/assets/hardware/drivetrain.jpg"></a>
+  <a href="Docs/assets/hardware/robot.jpg"><img width="32%" alt="The assembled robot: electronics stack, battery, mecanum wheels and the vision tag" src="Docs/assets/hardware/robot.jpg"></a>
+</p>
+<p align="center"><sub><b>Controller board</b> &nbsp;·&nbsp; <b>drivetrain, top view</b> &nbsp;·&nbsp; <b>assembled robot</b></sub></p>
 
-<sub><b>The controller board as assembled:</b> STM32F722, four stepper drivers
-under heatsinks, the power stage and the status OLED showing the Charara
-logo.</sub>
-
-Sources: [`Electrical/`](Electrical/) (schematic, PCB routing) and
-[`Mecanical/`](Mecanical/) (CAD captures).
+More in [`Electrical/`](Electrical/) (schematic, PCB routing) and
+[`Mecanical/`](Mecanical/) (CAD views, drive modules, complete set of photos).
 
 ## The console in pictures
 

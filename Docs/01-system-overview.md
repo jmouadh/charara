@@ -2,11 +2,14 @@
 
 ## 1. What the robot is
 
-Charara is a **differential-drive Eurobot-style robot**. Four stepper motors
-(two per side), quadrature encoders, limit switches, an OLED display and an
-RGB status LED are driven by an **STM32F722** board (firmware v3.5,
-bare-metal + IAR). A **Raspberry Pi 4** runs this service and is the only
-thing that talks to the board; a browser console is the operator interface.
+Charara is a **four-wheel mecanum robot** (holonomic: it strafes and rotates
+independently). Four stepper motors - one per wheel - quadrature odometry
+encoders, limit switches, an OLED display and an RGB status LED are driven by
+an **STM32F722** board (firmware v3.5, bare-metal + IAR). A **Raspberry Pi 4**
+runs this service and is the only thing that talks to the board; a browser
+console is the operator interface.
+
+![The assembled robot: controller board, battery, mecanum wheels and vision tag](assets/hardware/robot.jpg)
 
 ```
                        +---------------------------------------------+

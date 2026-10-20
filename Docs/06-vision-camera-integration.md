@@ -1,5 +1,7 @@
 # 06 - Camera / vision integration (`/ws/vision`)
 
+![Robot and camera on the field: the camera watches the tags, the console reports the obstacles](assets/hardware/vision-setup.jpg)
+
 The robot has no proximity sensor of its own: **obstacles from the outside
 world enter the system through the `/ws/vision` WebSocket.** A camera,
 detector or any other process connects, reports what it currently sees, and
