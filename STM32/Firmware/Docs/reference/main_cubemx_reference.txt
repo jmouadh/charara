@@ -1,0 +1,1265 @@
+/* ============================================================================
+   ARCHIVED REFERENCE - original main.c before the v2.2 layer refactor.
+   This file is NOT part of the build. The bring-up code shown here has been
+   reorganized into App/Src/robot_board.c (BSP_* functions) and main() was
+   reduced to two calls; see Docs/02-firmware-architecture.md section 10 for
+   the CubeMX regeneration workflow.
+   ============================================================================ */
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file           : main.c
+  * @brief          : Robot application: clock, I2C dual-role arbitration,
+  *                   main-loop tasks, status LED and watchdog.
+  * @author         : Mouadh Jeridi <jeridimouadh@gmail.com>
+  * @version        : 2.0.0
+  * @date           : 2026-09-25
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2025 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+/* Includes ------------------------------------------------------------------*/
+#include "main.h"
+
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
+#include "ROBOT_CONFIGS.h"
+#include "OLED_MouadhJeridi.h"
+#include "STEPPERS_MouadhJeridi.h"
+#include "ENCODERS_MouadhJeridi.h"
+#include "motion.h"
+#include "robot_protocol.h"
+/* USER CODE END Includes */
+
+/* Private typedef -----------------------------------------------------------*/
+/* USER CODE BEGIN PTD */
+/* Application types are defined in motion.h and robot_protocol.h. */
+/* USER CODE END PTD */
+
+/* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
+
+/* USER CODE END PD */
+
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
+
+/* USER CODE END PM */
+
+/* Private variables ---------------------------------------------------------*/
+I2C_HandleTypeDef hi2c1;
+TIM_HandleTypeDef htim2;
+TIM_HandleTypeDef htim3;
+TIM_HandleTypeDef htim4;
+TIM_HandleTypeDef htim5;
+TIM_HandleTypeDef htim7;
+TIM_HandleTypeDef htim8;
+TIM_HandleTypeDef htim9;
+TIM_HandleTypeDef htim11;
+TIM_HandleTypeDef htim12;
+TIM_HandleTypeDef htim13;
+TIM_HandleTypeDef htim14;
+UART_HandleTypeDef huart1;
+
+/* USER CODE BEGIN PV */
+/* Stepper motor IDs per side (as wired; see ROBOT_CONFIGS.h). */
+static uint8_t left_motors_id[]  = {2U, 3U};
+static uint8_t right_motors_id[] = {0U, 1U};
+
+/* I2C recovery request: set by the error callback, handled in the main loop. */
+static volatile uint8_t i2c_recover_req = 0;
+
+/* Set once the robot application finished its init (Error_Handler guard). */
+static volatile uint8_t robot_ready = 0;
+
+/* OLED scheduling state. */
+static uint32_t next_oled_ms = 0;
+
+IWDG_HandleTypeDef hiwdg;
+
+/* Legacy RGB button counters (BUTTON1/BUTTON2 still toggle the LED). */
+static uint8_t button1_counter = 0;
+static uint8_t button2_counter = 0;
+/* USER CODE END PV */
+
+/* Private function prototypes -----------------------------------------------*/
+void SystemClock_Config(void);
+static void MPU_Config(void);
+static void MX_GPIO_Init(void);
+static void MX_TIM2_Init(void);
+static void MX_TIM3_Init(void);
+static void MX_TIM4_Init(void);
+static void MX_TIM8_Init(void);
+static void MX_TIM12_Init(void);
+static void MX_I2C1_Init(void);
+static void MX_TIM9_Init(void);
+static void MX_TIM11_Init(void);
+static void MX_USART1_UART_Init(void);
+static void MX_TIM5_Init(void);
+static void MX_TIM14_Init(void);
+static void MX_TIM13_Init(void);
+static void MX_TIM7_Init(void);
+/* USER CODE BEGIN PFP */
+static void     MX_IWDG_Init(void);             /**< Starts the independent watchdog. */
+static void     ROBOT_init(void);               /**< One-time application bring-up.   */
+static void     ROBOT_task(void);               /**< Main-loop tick (never blocks).   */
+static void     ROBOT_oled_task(uint32_t now_ms); /**< Throttled OLED status screen.  */
+static void     ROBOT_led_set(uint8_t red, uint8_t green, uint8_t blue);
+                                                /**< RGB status LED color setter.     */
+static void     ROBOT_i2c_arm_listen(void);     /**< (Re-)arms I2C slave listen mode. */
+static void     ROBOT_i2c_recover(void);        /**< Recovers the I2C peripheral.     */
+static uint8_t  ROBOT_fmt_i32(char *buf, uint8_t capacity, uint8_t pos, int32_t value);
+                                                /**< Bounded decimal formatter.       */
+static uint8_t  ROBOT_append_str(char *buf, uint8_t capacity, uint8_t pos, const char *text);
+                                                /**< Bounded string appender.         */
+static void     ROBOT_build_status_lines(char *line0, char *line1, char *line2);
+                                                /**< Auto display content builder.    */
+void left_motors_reach_target_callback(void);   /**< Side fallback completion (left). */
+void right_motors_reach_target_callback(void);  /**< Side fallback completion (right).*/
+/* USER CODE END PFP */
+
+/* Private user code ---------------------------------------------------------*/
+/* USER CODE BEGIN 0 */
+
+/* USER CODE END 0 */
+
+/**
+  * @brief  The application entry point.
+  * @retval int
+  */
+int main(void)
+{
+  /* USER CODE BEGIN 1 */
+
+  /* USER CODE END 1 */
+
+  /* MPU Configuration--------------------------------------------------------*/
+  MPU_Config();
+
+  /* Enable I-Cache---------------------------------------------------------*/
+  SCB_EnableICache();
+
+  /* Enable D-Cache---------------------------------------------------------*/
+  SCB_EnableDCache();
+
+  /* MCU Configuration--------------------------------------------------------*/
+
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+  HAL_Init();
+
+  /* USER CODE BEGIN Init */
+
+  /* USER CODE END Init */
+
+  /* Configure the system clock */
+  SystemClock_Config();
+
+  /* USER CODE BEGIN SysInit */
+
+  /* USER CODE END SysInit */
+
+  /* Initialize all configured peripherals */
+  MX_GPIO_Init();
+  MX_TIM2_Init();
+  MX_TIM3_Init();
+  MX_TIM4_Init();
+  MX_TIM8_Init();
+  MX_TIM12_Init();
+  MX_I2C1_Init();
+  MX_TIM9_Init();
+  MX_TIM11_Init();
+  MX_USART1_UART_Init();
+  MX_TIM5_Init();
+  MX_TIM14_Init();
+  MX_TIM13_Init();
+  MX_TIM7_Init();
+  /* USER CODE BEGIN 2 */
+
+  ROBOT_init();
+
+  /* USER CODE END 2 */
+
+  /* Infinite loop */
+  /* USER CODE BEGIN WHILE */
+  while (1)
+  {
+    /* USER CODE END WHILE */
+
+    /* USER CODE BEGIN 3 */
+    ROBOT_task();
+  }
+  /* USER CODE END 3 */
+}
+
+/**
+  * @brief System Clock Configuration
+  * @retval None
+  */
+void SystemClock_Config(void)
+{
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+
+  /** Configure the main internal regulator output voltage
+  */
+  __HAL_RCC_PWR_CLK_ENABLE();
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE1);
+
+  /** Initialize the RCC oscillators.
+   *  25 MHz HSE quartz through the PLL: M=25 (VCO input 1 MHz),
+   *  N=432 (VCO 432 MHz), P=2 -> SYSCLK 216 MHz, Q=9 -> 48 MHz spare.
+   *  All derived timing constants (I2C TIMINGR, TIM7 prescaler, PWM
+   *  prescalers, stepper ARR mapping) are documented in ROBOT_CONFIGS.h.
+  */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSE;
+  RCC_OscInitStruct.HSEState = RCC_HSE_ON;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
+  RCC_OscInitStruct.PLL.PLLM = 25U;
+  RCC_OscInitStruct.PLL.PLLN = 432U;
+  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
+  RCC_OscInitStruct.PLL.PLLQ = 9U;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /* Over-drive is required above 180 MHz (VOS1 + over-drive). */
+  if (HAL_PWREx_EnableOverDrive() != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Initializes the CPU, AHB and APB buses clocks
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV4;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV2;
+
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_7) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
+  * @brief I2C1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C1_Init(void)
+{
+  hi2c1.Instance = I2C1;
+  /* I2C1 kernel clock = PCLK1 (54 MHz); TIMINGR in ROBOT_CONFIGS.h assumes it
+     (see BSP_i2c1_init in robot_board.c).
+     OwnAddress1 = 0x14 => 7-bit slave address 0x0A (HAL stores it shifted). */
+  hi2c1.Init.Timing = ROBOT_I2C_TIMING_100K;
+  hi2c1.Init.OwnAddress1 = 0x14U; /* 7-bit 0x0A, matches the RPi driver */
+  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c1.Init.OwnAddress2 = 0;
+  hi2c1.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
+  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 0;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 1000;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK) { Error_Handler(); }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK) { Error_Handler(); }
+  if (HAL_TIM_OC_Init(&htim2) != HAL_OK) { Error_Handler(); }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK) { Error_Handler(); }
+  sConfigOC.OCMode = TIM_OCMODE_TOGGLE;
+  sConfigOC.Pulse = 500;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_OC_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_1) != HAL_OK) { Error_Handler(); }
+  __HAL_TIM_ENABLE_OCxPRELOAD(&htim2, TIM_CHANNEL_1);
+  sConfigOC.OCMode = TIM_OCMODE_TIMING;
+  sConfigOC.Pulse = 0;
+  if (HAL_TIM_OC_ConfigChannel(&htim2, &sConfigOC, TIM_CHANNEL_2) != HAL_OK) { Error_Handler(); }
+  HAL_TIM_MspPostInit(&htim2);
+}
+
+/**
+  * @brief TIM3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM3_Init(void)
+{
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  htim3.Instance = TIM3;
+  htim3.Init.Prescaler = 0;
+  htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim3.Init.Period = 1000;
+  htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_Base_Init(&htim3) != HAL_OK) { Error_Handler(); }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim3, &sClockSourceConfig) != HAL_OK) { Error_Handler(); }
+  if (HAL_TIM_OC_Init(&htim3) != HAL_OK) { Error_Handler(); }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim3, &sMasterConfig) != HAL_OK) { Error_Handler(); }
+  sConfigOC.OCMode = TIM_OCMODE_TOGGLE;
+  sConfigOC.Pulse = 500;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_OC_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_1) != HAL_OK) { Error_Handler(); }
+  __HAL_TIM_ENABLE_OCxPRELOAD(&htim3, TIM_CHANNEL_1);
+  HAL_TIM_MspPostInit(&htim3);
+}
+
+/**
+  * @brief TIM4 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM4_Init(void)
+{
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  htim4.Instance = TIM4;
+  htim4.Init.Prescaler = 0;
+  htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim4.Init.Period = 1000;
+  htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_Base_Init(&htim4) != HAL_OK) { Error_Handler(); }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim4, &sClockSourceConfig) != HAL_OK) { Error_Handler(); }
+  if (HAL_TIM_OC_Init(&htim4) != HAL_OK) { Error_Handler(); }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim4, &sMasterConfig) != HAL_OK) { Error_Handler(); }
+  sConfigOC.OCMode = TIM_OCMODE_TOGGLE;
+  sConfigOC.Pulse = 500;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_OC_ConfigChannel(&htim4, &sConfigOC, TIM_CHANNEL_1) != HAL_OK) { Error_Handler(); }
+  HAL_TIM_MspPostInit(&htim4);
+}
+
+/**
+  * @brief TIM5 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM5_Init(void)
+{
+  TIM_Encoder_InitTypeDef sConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  htim5.Instance = TIM5;
+  htim5.Init.Prescaler = 0;
+  htim5.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim5.Init.Period = 0xFFFF;
+  htim5.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim5.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_OC_Init(&htim5) != HAL_OK) { Error_Handler(); }
+  sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
+  sConfig.IC1Polarity = TIM_ICPOLARITY_FALLING;
+  sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC1Filter = 10;
+  sConfig.IC2Polarity = TIM_ICPOLARITY_FALLING;
+  sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC2Filter = 10;
+  if (HAL_TIM_Encoder_Init(&htim5, &sConfig) != HAL_OK) { Error_Handler(); }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim5, &sMasterConfig) != HAL_OK) { Error_Handler(); }
+  sConfigOC.OCMode = TIM_OCMODE_TOGGLE;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_OC_ConfigChannel(&htim5, &sConfigOC, TIM_CHANNEL_3) != HAL_OK) { Error_Handler(); }
+  __HAL_TIM_ENABLE_OCxPRELOAD(&htim5, TIM_CHANNEL_3);
+}
+
+/**
+  * @brief TIM7 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM7_Init(void)
+{
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  htim7.Instance = TIM7;
+  /* Odometry sampling at exactly 100 Hz: f_tim = 10 kHz, period 100.
+     TIM7 is an APB1 timer (kernel clock = 2 x PCLK1 with APB1 /4: 108 MHz);
+     see BSP_apb1_timer_clk_hz() in robot_board.c. */
+  htim7.Init.Prescaler = (uint32_t)((BSP_apb1_timer_clk_hz() / 10000U) - 1U);
+  htim7.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim7.Init.Period = 100U - 1U;
+  htim7.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim7) != HAL_OK) { Error_Handler(); }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim7, &sMasterConfig) != HAL_OK) { Error_Handler(); }
+}
+
+/**
+  * @brief TIM8 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM8_Init(void)
+{
+  TIM_Encoder_InitTypeDef sConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+  TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
+
+  htim8.Instance = TIM8;
+  htim8.Init.Prescaler = 0;
+  htim8.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim8.Init.Period = 0xFFFF;
+  htim8.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim8.Init.RepetitionCounter = 0;
+  htim8.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_OC_Init(&htim8) != HAL_OK) { Error_Handler(); }
+  sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
+  sConfig.IC1Polarity = TIM_ICPOLARITY_FALLING;
+  sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC1Filter = 10;
+  sConfig.IC2Polarity = TIM_ICPOLARITY_FALLING;
+  sConfig.IC2Selection = TIM_ICSELECTION_DIRECTTI;
+  sConfig.IC2Prescaler = TIM_ICPSC_DIV1;
+  sConfig.IC2Filter = 10;
+  if (HAL_TIM_Encoder_Init(&htim8, &sConfig) != HAL_OK) { Error_Handler(); }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterOutputTrigger2 = TIM_TRGO2_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim8, &sMasterConfig) != HAL_OK) { Error_Handler(); }
+  sConfigOC.OCMode = TIM_OCMODE_TOGGLE;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCNPolarity = TIM_OCNPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  sConfigOC.OCIdleState = TIM_OCIDLESTATE_RESET;
+  sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_RESET;
+  if (HAL_TIM_OC_ConfigChannel(&htim8, &sConfigOC, TIM_CHANNEL_3) != HAL_OK) { Error_Handler(); }
+  __HAL_TIM_ENABLE_OCxPRELOAD(&htim8, TIM_CHANNEL_3);
+  sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_DISABLE;
+  sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_DISABLE;
+  sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
+  sBreakDeadTimeConfig.DeadTime = 0;
+  sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
+  sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
+  sBreakDeadTimeConfig.BreakFilter = 0;
+  sBreakDeadTimeConfig.Break2State = TIM_BREAK2_DISABLE;
+  sBreakDeadTimeConfig.Break2Polarity = TIM_BREAK2POLARITY_HIGH;
+  sBreakDeadTimeConfig.Break2Filter = 0;
+  sBreakDeadTimeConfig.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
+  if (HAL_TIMEx_ConfigBreakDeadTime(&htim8, &sBreakDeadTimeConfig) != HAL_OK) { Error_Handler(); }
+}
+
+/**
+  * @brief TIM9 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM9_Init(void)
+{
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  htim9.Instance = TIM9;
+  /* ~100 Hz RGB PWM: APB2 timer clock / (8437 * 256); see
+     BSP_apb2_timer_clk_hz() in robot_board.c. */
+  htim9.Init.Prescaler = (uint32_t)((BSP_apb2_timer_clk_hz() / 25600U) - 1U);
+  htim9.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim9.Init.Period = 256U - 1U;
+  htim9.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim9.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_PWM_Init(&htim9) != HAL_OK) { Error_Handler(); }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim9, &sConfigOC, TIM_CHANNEL_1) != HAL_OK) { Error_Handler(); }
+  if (HAL_TIM_PWM_ConfigChannel(&htim9, &sConfigOC, TIM_CHANNEL_2) != HAL_OK) { Error_Handler(); }
+  HAL_TIM_MspPostInit(&htim9);
+}
+
+/**
+  * @brief TIM11 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM11_Init(void)
+{
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  htim11.Instance = TIM11;
+  /* ~100 Hz RGB PWM: APB2 timer clock / (8437 * 256); see
+     BSP_apb2_timer_clk_hz() in robot_board.c. */
+  htim11.Init.Prescaler = (uint32_t)((BSP_apb2_timer_clk_hz() / 25600U) - 1U);
+  htim11.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim11.Init.Period = 256U - 1U;
+  htim11.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim11.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_Base_Init(&htim11) != HAL_OK) { Error_Handler(); }
+  if (HAL_TIM_PWM_Init(&htim11) != HAL_OK) { Error_Handler(); }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 0;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_PWM_ConfigChannel(&htim11, &sConfigOC, TIM_CHANNEL_1) != HAL_OK) { Error_Handler(); }
+  HAL_TIM_MspPostInit(&htim11);
+}
+
+/**
+  * @brief TIM12 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM12_Init(void)
+{
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+
+  htim12.Instance = TIM12;
+  htim12.Init.Prescaler = 0;
+  htim12.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim12.Init.Period = 1000;
+  htim12.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim12.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_Base_Init(&htim12) != HAL_OK) { Error_Handler(); }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim12, &sClockSourceConfig) != HAL_OK) { Error_Handler(); }
+  if (HAL_TIM_OC_Init(&htim12) != HAL_OK) { Error_Handler(); }
+  sConfigOC.OCMode = TIM_OCMODE_TOGGLE;
+  sConfigOC.Pulse = 500;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  if (HAL_TIM_OC_ConfigChannel(&htim12, &sConfigOC, TIM_CHANNEL_1) != HAL_OK) { Error_Handler(); }
+  __HAL_TIM_ENABLE_OCxPRELOAD(&htim12, TIM_CHANNEL_1);
+  HAL_TIM_MspPostInit(&htim12);
+}
+
+/**
+  * @brief TIM13 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM13_Init(void)
+{
+  htim13.Instance = TIM13;
+  htim13.Init.Prescaler = 0;
+  htim13.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim13.Init.Period = 1000;
+  htim13.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim13.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_Base_Init(&htim13) != HAL_OK) { Error_Handler(); }
+}
+
+/**
+  * @brief TIM14 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM14_Init(void)
+{
+  htim14.Instance = TIM14;
+  htim14.Init.Prescaler = 0;
+  htim14.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim14.Init.Period = 1000;
+  htim14.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim14.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_Base_Init(&htim14) != HAL_OK) { Error_Handler(); }
+}
+
+/**
+  * @brief USART1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART1_UART_Init(void)
+{
+  huart1.Instance = USART1;
+  huart1.Init.BaudRate = 115200;
+  huart1.Init.WordLength = UART_WORDLENGTH_8B;
+  huart1.Init.StopBits = UART_STOPBITS_1;
+  huart1.Init.Parity = UART_PARITY_NONE;
+  huart1.Init.Mode = UART_MODE_TX_RX;
+  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  huart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  if (HAL_UART_Init(&huart1) != HAL_OK) { Error_Handler(); }
+}
+
+/**
+  * @brief GPIO Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_GPIO_Init(void)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+
+  __HAL_RCC_GPIOH_CLK_ENABLE();
+  __HAL_RCC_GPIOC_CLK_ENABLE();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+
+  HAL_GPIO_WritePin(GPIOC, LED1_Pin|EN2_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, DIR1_Pin|DIR2_Pin|LED2_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, EN4_Pin|DIR4_Pin|EN1_Pin|EN3_Pin|DIR3_Pin, GPIO_PIN_RESET);
+
+  GPIO_InitStruct.Pin = LED1_Pin|EN2_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+  GPIO_InitStruct.Pin = DIR1_Pin|DIR2_Pin|LED2_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  GPIO_InitStruct.Pin = SW1_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(SW1_GPIO_Port, &GPIO_InitStruct);
+
+  GPIO_InitStruct.Pin = EN4_Pin|DIR4_Pin|EN1_Pin|EN3_Pin|DIR3_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  GPIO_InitStruct.Pin = BUTTON1_Pin|BUTTON2_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+  GPIO_InitStruct.Pin = SW4_Pin|SW3_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  HAL_NVIC_SetPriority(EXTI9_5_IRQn, 5, 0);
+  HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
+
+  /* Wall limit switches SW1 (PB10), SW4 (PA11), SW3 (PA12): highest
+     priority so they preempt everything and stop the robot immediately.
+     NOTE: edge sensitivity is set above (rising). If the switches are
+     wired active-low, change GPIO_MODE_IT_RISING to GPIO_MODE_IT_FALLING
+     for the SW pins in this function. */
+  HAL_NVIC_SetPriority(EXTI15_10_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
+}
+
+/* USER CODE BEGIN 4 */
+/* ========================= Robot application layer ======================== */
+/* Hardware start-up and the non-blocking main-loop task. All command and
+   motion logic lives in robot_protocol.c and motion.c; this file owns the
+   I2C bus arbitration between "slave listen" and "master for the OLED",
+   the status screen, the RGB status LED and the watchdog. */
+
+/** @brief Sets the RGB status LED (PWM duty 0..255 per channel). */
+static void ROBOT_led_set(uint8_t red, uint8_t green, uint8_t blue)
+{
+  __HAL_TIM_SET_COMPARE(&htim9, TIM_CHANNEL_1, (uint32_t)red);
+  __HAL_TIM_SET_COMPARE(&htim9, TIM_CHANNEL_2, (uint32_t)green);
+  __HAL_TIM_SET_COMPARE(&htim11, TIM_CHANNEL_1, (uint32_t)blue);
+}
+
+/** @brief Starts the IWDG (~500 ms); a stuck main loop resets the board. */
+static void MX_IWDG_Init(void)
+{
+  hiwdg.Instance = IWDG;
+  hiwdg.Init.Prescaler = IWDG_PRESCALER_64;
+  hiwdg.Init.Reload = ROBOT_IWDG_RELOAD;
+  hiwdg.Init.Window = IWDG_WINDOW_DISABLE;
+  if (HAL_IWDG_Init(&hiwdg) != HAL_OK)
+  {
+    Error_Handler();
+  }
+}
+
+/** @brief Re-arms the I2C slave listen mode; flags recovery on failure. */
+static void ROBOT_i2c_arm_listen(void)
+{
+  if (HAL_I2C_EnableListen_IT(&hi2c1) != HAL_OK)
+  {
+    i2c_recover_req = 1U;
+  }
+}
+
+/** @brief DeInit/Init cycle after a bus error, then re-arms listen mode. */
+static void ROBOT_i2c_recover(void)
+{
+  if (i2c_recover_req == 0U)
+  {
+    return;
+  }
+  (void)HAL_I2C_DeInit(&hi2c1);
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+  {
+    return; /* retry on the next loop pass */
+  }
+  (void)HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_ENABLE);
+  (void)HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0U);
+  i2c_recover_req = 0U;
+  ROBOT_i2c_arm_listen();
+}
+
+/** @brief One-time application bring-up: steppers, encoders, protocol, motion,
+ *         OLED splash, watchdog, I2C listen mode. */
+static void ROBOT_init(void)
+{
+  /* Steppers (ids as wired; left pair {2,3}, right pair {0,1}) ---------- */
+  STEPPERS_MJ_Init(0U, &htim12, TIM_CHANNEL_1, EN4_Pin, GPIOB, DIR4_Pin, GPIOB, GPIO_PIN_SET);
+  STEPPERS_MJ_Init(1U, &htim4,  TIM_CHANNEL_1, EN3_Pin, GPIOB, DIR3_Pin, GPIOB, GPIO_PIN_SET);
+  STEPPERS_MJ_Init(2U, &htim3,  TIM_CHANNEL_1, EN2_Pin, GPIOC, DIR2_Pin, GPIOA, GPIO_PIN_RESET);
+  STEPPERS_MJ_Init(3U, &htim2,  TIM_CHANNEL_1, EN1_Pin, GPIOB, DIR1_Pin, GPIOA, GPIO_PIN_RESET);
+  STEPPERS_MJ_Init_left_steppers(left_motors_id, 2U, &htim14, left_motors_reach_target_callback);
+  STEPPERS_MJ_Init_right_steppers(right_motors_id, 2U, &htim13, right_motors_reach_target_callback);
+  STEPPERS_MJ_disable_left_steppers();
+  STEPPERS_MJ_disable_right_steppers();
+
+  /* Encoders and the 100 Hz odometry sampling timer --------------------- */
+  ENCODERS_MJ_Init(0U, &htim5, 0U);
+  ENCODERS_MJ_Init(1U, &htim8, 0U);
+  (void)HAL_TIM_Base_Start_IT(&htim7);
+
+  /* Protocol + motion engine -------------------------------------------- */
+  MOTION_init();
+  PROTO_init();
+
+  /* RGB status LED ------------------------------------------------------- */
+  (void)HAL_TIM_PWM_Start(&htim11, TIM_CHANNEL_1);
+  (void)HAL_TIM_PWM_Start(&htim9, TIM_CHANNEL_1);
+  (void)HAL_TIM_PWM_Start(&htim9, TIM_CHANNEL_2);
+  ROBOT_led_set(0U, 0U, 0U);
+
+  /* OLED boot splash (bounded; automatically skipped if OLED is absent) -- */
+  OLED_MJ_Init();
+  OLED_MJ_mirror_horizental();
+  OLED_MJ_mirror_vertical();
+  if (ssd1306_GetError() == 0U)
+  {
+    ssd1306_Fill(Black);
+    ssd1306_DrawBitmap(42, 0, fire_bitmap, 64, 40, White);
+    OLED_MJ_write_in_middle("Charara", 45, Font_11x18, White);
+    ssd1306_UpdateScreen();
+    HAL_Delay(400U);
+    ssd1306_ClearError();
+  }
+
+  /* Watchdog + I2C slave -------------------------------------------------- */
+  MX_IWDG_Init();
+  ROBOT_led_set(0U, 0U, 32U); /* idle: blue */
+  ROBOT_i2c_arm_listen();
+  robot_ready = 1U;
+}
+
+
+/* -------------------------- OLED status screen ---------------------------- */
+
+/** @brief Appends 'value' as decimal text at position 'pos'; bounded, NUL kept. */
+static uint8_t ROBOT_fmt_i32(char *buf, uint8_t capacity, uint8_t pos, int32_t value)
+{
+  char     digits[10];
+  uint8_t  count = 0U;
+  uint8_t  index;
+  uint32_t magnitude;
+  uint8_t  negative = 0U;
+
+  if (value < 0)
+  {
+    negative = 1U;
+    magnitude = (uint32_t)(-(value + 1)) + 1U; /* safe for INT32_MIN */
+  }
+  else
+  {
+    magnitude = (uint32_t)value;
+  }
+
+  do
+  {
+    digits[count] = (char)('0' + (int)(magnitude % 10U));
+    magnitude /= 10U;
+    count++;
+  } while ((magnitude > 0U) && (count < (uint8_t)sizeof(digits)));
+
+  if (negative != 0U)
+  {
+    if (pos < capacity)
+    {
+      buf[pos] = '-';
+      pos++;
+    }
+  }
+  for (index = count; index > 0U; index--)
+  {
+    if (pos < capacity)
+    {
+      buf[pos] = digits[index - 1U];
+      pos++;
+    }
+  }
+  if (pos < capacity)
+  {
+    buf[pos] = '\0';
+  }
+  return pos;
+}
+
+/** @brief Appends a NUL terminated string into a bounded buffer. */
+static uint8_t ROBOT_append_str(char *buf, uint8_t capacity, uint8_t pos, const char *text)
+{
+  while ((*text != '\0') && (pos < capacity))
+  {
+    buf[pos] = *text;
+    pos++;
+    text++;
+  }
+  if (pos < capacity)
+  {
+    buf[pos] = '\0';
+  }
+  return pos;
+}
+
+/** @brief Builds the automatic OLED content: state/faults, pose, speed. */
+static void ROBOT_build_status_lines(char *line0, char *line1, char *line2)
+{
+  static const char *const state_names[7] =
+  {
+    "IDLE", "DRIVE", "TURN", "STRAFE", "GOTO", "FAULT", "ESTOP"
+  };
+  MOTION_SNAPSHOT snapshot;
+  uint8_t pos;
+
+  MOTION_get_snapshot(&snapshot);
+
+  pos = 0U;
+  if (snapshot.state < 7U)
+  {
+    pos = ROBOT_append_str(line0, (uint8_t)ROBOT_OLED_LINE_LEN, pos, state_names[snapshot.state]);
+  }
+  if (snapshot.faults != 0U)
+  {
+    pos = ROBOT_append_str(line0, (uint8_t)ROBOT_OLED_LINE_LEN, pos, " F");
+    pos = ROBOT_fmt_i32(line0, (uint8_t)ROBOT_OLED_LINE_LEN, pos, (int32_t)snapshot.faults);
+  }
+
+  pos = 0U;
+  pos = ROBOT_append_str(line1, (uint8_t)ROBOT_OLED_LINE_LEN, pos, "x");
+  pos = ROBOT_fmt_i32(line1, (uint8_t)ROBOT_OLED_LINE_LEN, pos, snapshot.x_um / 1000);
+  pos = ROBOT_append_str(line1, (uint8_t)ROBOT_OLED_LINE_LEN, pos, " y");
+  pos = ROBOT_fmt_i32(line1, (uint8_t)ROBOT_OLED_LINE_LEN, pos, snapshot.y_um / 1000);
+  (void)ROBOT_append_str(line1, (uint8_t)ROBOT_OLED_LINE_LEN, pos, "mm");
+
+  pos = 0U;
+  pos = ROBOT_append_str(line2, (uint8_t)ROBOT_OLED_LINE_LEN, pos, "th");
+  pos = ROBOT_fmt_i32(line2, (uint8_t)ROBOT_OLED_LINE_LEN, pos, snapshot.theta_mdeg / 1000);
+  pos = ROBOT_append_str(line2, (uint8_t)ROBOT_OLED_LINE_LEN, pos, " v");
+  (void)ROBOT_fmt_i32(line2, (uint8_t)ROBOT_OLED_LINE_LEN, pos, (int32_t)snapshot.v_left_mm_s);
+}
+
+/** @brief Throttled OLED refresh: runs only when the bus has been quiet for
+ *         ROBOT_I2C_BUS_QUIET_MS, no motion/request is pending; listen mode
+ *         is restored on every exit path. */
+static void ROBOT_oled_task(uint32_t now_ms)
+{
+  char  line0[ROBOT_OLED_LINE_LEN];
+  char  line1[ROBOT_OLED_LINE_LEN];
+  char  line2[ROBOT_OLED_LINE_LEN];
+  const char *display0;
+  const char *display1;
+  const char *display2;
+
+  if (PROTO_get_display_mode() == PROTO_DISPLAY_OFF)
+  {
+    return;
+  }
+  if ((int32_t)(now_ms - next_oled_ms) < 0)
+  {
+    return;
+  }
+  if (MOTION_is_busy() != 0U)
+  {
+    next_oled_ms = now_ms + 200U; /* keep the bus free while moving */
+    return;
+  }
+  if (PROTO_has_pending_requests() != 0U)
+  {
+    return; /* serve the RPi first */
+  }
+  if (PROTO_ms_since_bus_activity(now_ms) < ROBOT_I2C_BUS_QUIET_MS)
+  {
+    return;
+  }
+
+  if (PROTO_get_display_mode() == PROTO_DISPLAY_AUTO)
+  {
+    line0[0] = '\0';
+    line1[0] = '\0';
+    line2[0] = '\0';
+    ROBOT_build_status_lines(line0, line1, line2);
+    display0 = line0;
+    display1 = line1;
+    display2 = line2;
+  }
+  else
+  {
+    display0 = PROTO_get_display_line(0U);
+    display1 = PROTO_get_display_line(1U);
+    display2 = PROTO_get_display_line(2U);
+  }
+
+  /* Leave slave listen mode for the master transfer to the OLED. */
+  (void)HAL_I2C_DisableListen_IT(&hi2c1);
+  if (PROTO_bus_is_active() != 0U)
+  {
+    ROBOT_i2c_arm_listen(); /* the RPi won the race: abort this refresh */
+    return;
+  }
+
+  ssd1306_Fill(Black);
+  ssd1306_SetCursor(2, 0);
+  ssd1306_WriteString((char *)display0, Font_7x10, White);
+  ssd1306_SetCursor(2, 22);
+  ssd1306_WriteString((char *)display1, Font_7x10, White);
+  ssd1306_SetCursor(2, 44);
+  ssd1306_WriteString((char *)display2, Font_7x10, White);
+  ssd1306_UpdateScreen();
+
+  if (ssd1306_GetError() != 0U)
+  {
+    ssd1306_ClearError();
+    next_oled_ms = now_ms + ROBOT_OLED_BACKOFF_MS;
+  }
+  else
+  {
+    next_oled_ms = now_ms + ROBOT_OLED_REFRESH_MS;
+  }
+  ROBOT_i2c_arm_listen();
+}
+
+/* --------------------------- Main loop task ------------------------------ */
+/** @brief Super-loop tick: protocol, motion, OLED, I2C recovery, LED, IWDG. */
+static void ROBOT_task(void)
+{
+  uint32_t now_ms = HAL_GetTick();
+  uint8_t  state;
+
+  PROTO_task();
+  MOTION_task();
+  ROBOT_oled_task(now_ms);
+  ROBOT_i2c_recover();
+
+  /* RGB status: idle blue, moving green, fault red, e-stop blinking. */
+  state = MOTION_get_state();
+  if ((state == MOTION_STATE_FAULT) || (state == MOTION_STATE_ESTOP))
+  {
+    if ((state == MOTION_STATE_ESTOP) && (((now_ms / 250U) % 2U) == 0U))
+    {
+      ROBOT_led_set(0U, 0U, 0U);
+    }
+    else
+    {
+      ROBOT_led_set(48U, 0U, 0U);
+    }
+  }
+  else if (MOTION_is_busy() != 0U)
+  {
+    ROBOT_led_set(0U, 48U, 0U);
+  }
+  else
+  {
+    ROBOT_led_set(0U, 0U, 32U);
+  }
+
+  (void)HAL_IWDG_Refresh(&hiwdg);
+}
+
+/* ====================== I2C Listen-mode Callbacks ======================= */
+
+/* ======================= I2C listen-mode callbacks ======================= */
+
+/** @brief I2C address matched: arms a 16 B receive (write) or a 32 B
+ *         transmit (read) transfer. ISR context. */
+void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection, uint16_t AddrMatchCode)
+{
+  UNUSED(AddrMatchCode);
+  if (hi2c->Instance != I2C1)
+  {
+    return;
+  }
+  PROTO_note_bus_activity();
+
+  if (TransferDirection == I2C_DIRECTION_TRANSMIT)
+  {
+    /* Master writes a 16-byte request frame. */
+    (void)HAL_I2C_Slave_Seq_Receive_IT(hi2c, PROTO_get_rx_buffer(), PROTO_REQ_SIZE, I2C_LAST_FRAME);
+  }
+  else
+  {
+    /* Master reads the 32-byte latest response frame. */
+    PROTO_copy_serving_isr();
+    (void)HAL_I2C_Slave_Seq_Transmit_IT(hi2c, (uint8_t *)PROTO_get_serving_buffer(), PROTO_RSP_SIZE, I2C_LAST_FRAME);
+  }
+}
+
+/** @brief Request frame received: protocol validation and queueing. */
+void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c)
+{
+  if (hi2c->Instance != I2C1)
+  {
+    return;
+  }
+  PROTO_on_rx_complete_isr(); /* validate, enqueue, immediate safety flags */
+}
+
+/** @brief Response frame fully transmitted; nothing further to do. */
+void HAL_I2C_SlaveTxCpltCallback(I2C_HandleTypeDef *hi2c)
+{
+  if (hi2c->Instance != I2C1)
+  {
+    return;
+  }
+  /* Nothing to do: the response frame was fully transmitted. */
+}
+
+/** @brief Listen mode finished: re-arm it (recovery on failure). */
+void HAL_I2C_ListenCpltCallback(I2C_HandleTypeDef *hi2c)
+{
+  if (hi2c->Instance != I2C1)
+  {
+    return;
+  }
+  PROTO_note_bus_activity();
+  ROBOT_i2c_arm_listen();
+}
+
+/** @brief I2C error: request main-loop recovery (never DeInit in the ISR). */
+void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
+{
+  if (hi2c->Instance != I2C1)
+  {
+    return;
+  }
+  /* Never DeInit/Init inside the ISR: flag it and let the main loop recover. */
+  i2c_recover_req = 1U;
+}
+
+/* =================== End of I2C Listen-mode Callbacks =================== */
+
+/* Request queue and CRC validation moved to robot_protocol.c. */
+
+/** @brief EXTI dispatcher: wall limit switches (hard stop) and user buttons. */
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+  /* Wall limit switches: immediate hard stop + latched fault (ISR context). */
+  if ((GPIO_Pin == SW1_Pin) || (GPIO_Pin == SW4_Pin) || (GPIO_Pin == SW3_Pin))
+  {
+    MOTION_on_limit_switch(GPIO_Pin);
+    return;
+  }
+
+  if (GPIO_Pin == BUTTON1_Pin)
+  {
+    button1_counter++;
+    if ((button1_counter % 2U) != 0U)
+    {
+      __HAL_TIM_SET_COMPARE(&htim11, TIM_CHANNEL_1, 255U);
+      __HAL_TIM_SET_COMPARE(&htim9, TIM_CHANNEL_1, 255U);
+    }
+    else
+    {
+      __HAL_TIM_SET_COMPARE(&htim11, TIM_CHANNEL_1, 0U);
+      __HAL_TIM_SET_COMPARE(&htim9, TIM_CHANNEL_1, 0U);
+    }
+  }
+  else if (GPIO_Pin == BUTTON2_Pin)
+  {
+    button2_counter++;
+    if ((button2_counter % 2U) != 0U)
+    {
+      __HAL_TIM_SET_COMPARE(&htim9, TIM_CHANNEL_1, 255U);
+      __HAL_TIM_SET_COMPARE(&htim9, TIM_CHANNEL_2, 255U);
+    }
+    else
+    {
+      __HAL_TIM_SET_COMPARE(&htim9, TIM_CHANNEL_1, 0U);
+      __HAL_TIM_SET_COMPARE(&htim9, TIM_CHANNEL_2, 0U);
+    }
+  }
+  else
+  {
+    /* unrelated EXTI line */
+  }
+}
+
+/* Fallback completion callbacks used by the stepper driver's side counters
+   (the motion engine normally stops on encoder feedback before this fires). */
+/** @brief Fallback completion callback for the left side group. */
+void left_motors_reach_target_callback(void)
+{
+  STEPPERS_MJ_stop_left();
+}
+
+/** @brief Fallback completion callback for the right side group. */
+void right_motors_reach_target_callback(void)
+{
+  STEPPERS_MJ_stop_right();
+}
+
+/* Legacy command field parsers removed: all payload parsing is done with
+   explicit little-endian accessors in robot_protocol.c. */
+
+/* Legacy blocking motion helpers removed: the non-blocking, closed-loop
+   motion engine lives in motion.c. */
+
+/* Motion command execution moved to robot_protocol.c (parsing/validation)
+   and motion.c (control). Requests are queued by the I2C ISR and executed
+   asynchronously by PROTO_task() in the main loop. */
+
+/* Odometry integration is implemented in motion.c (MOTION_odometry_tick),
+   called from the TIM7 interrupt at exactly 100 Hz. */
+/* USER CODE END 4 */
+
+/* MPU Configuration */
+
+void MPU_Config(void)
+{
+  MPU_Region_InitTypeDef MPU_InitStruct = {0};
+
+  HAL_MPU_Disable();
+
+  MPU_InitStruct.Enable = MPU_REGION_ENABLE;
+  MPU_InitStruct.Number = MPU_REGION_NUMBER0;
+  MPU_InitStruct.BaseAddress = 0x0;
+  MPU_InitStruct.Size = MPU_REGION_SIZE_4GB;
+  MPU_InitStruct.SubRegionDisable = 0x87;
+  MPU_InitStruct.TypeExtField = MPU_TEX_LEVEL0;
+  MPU_InitStruct.AccessPermission = MPU_REGION_NO_ACCESS;
+  MPU_InitStruct.DisableExec = MPU_INSTRUCTION_ACCESS_DISABLE;
+  MPU_InitStruct.IsShareable = MPU_ACCESS_SHAREABLE;
+  MPU_InitStruct.IsCacheable = MPU_ACCESS_NOT_CACHEABLE;
+  MPU_InitStruct.IsBufferable = MPU_ACCESS_NOT_BUFFERABLE;
+
+  HAL_MPU_ConfigRegion(&MPU_InitStruct);
+  HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
+}
+
+/**
+  * @brief  Period elapsed callback in non blocking mode
+  * @note   Called by HAL_TIM_IRQHandler()
+  * @param  htim : TIM handle
+  * @retval None
+  */
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+  if (htim->Instance == TIM6)
+  {
+    HAL_IncTick();
+    return;
+  }
+  if (htim->Instance == TIM7)
+  {
+    /* 100 Hz odometry sampling: refresh the encoder caches first. */
+    ENCODERS_MJ_poll();
+    MOTION_odometry_tick();
+    return;
+  }
+  /* Side target timers run the stepper driver's open-loop fallback counting
+     (normal completion is closed-loop on the odometry encoders). */
+  STEPPERS_MJ_set_left_target_callback(htim);
+  STEPPERS_MJ_set_right_target_callback(htim);
+}
+
+/**
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
+void Error_Handler(void)
+{
+  /* Safe state: stop pulses and release the motors if the application is
+     already running. The IWDG (started in ROBOT_init) then resets the board
+     after ~500 ms; before that the board simply waits for a power cycle. */
+  __disable_irq();
+  if (robot_ready != 0U)
+  {
+    STEPPERS_MJ_stop_all();
+    STEPPERS_MJ_disable_left_steppers();
+    STEPPERS_MJ_disable_right_steppers();
+  }
+  while (1)
+  {
+    /* wait for the watchdog reset */
+  }
+}
+
+#ifdef  USE_FULL_ASSERT
+/**
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
+void assert_failed(uint8_t *file, uint32_t line)
+{
+  (void)file; (void)line;
+}
+#endif /* USE_FULL_ASSERT */
