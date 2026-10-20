@@ -16,6 +16,8 @@ use_directory_urls: false
 theme:
   name: material
   language: en
+  logo: assets/charara-logo.png
+  favicon: assets/favicon.png
   features:
     - navigation.sections
     - navigation.top

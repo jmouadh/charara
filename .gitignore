@@ -46,3 +46,7 @@ pytest_out.txt
 Thumbs.db
 .idea/
 *.log
+
+# source media - the processed versions live in Docs/assets/
+Charara.jpeg
+Electrical/hw_real.jpeg
