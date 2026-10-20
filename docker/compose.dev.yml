@@ -1,0 +1,35 @@
+# Development / demo on any machine - no robot, mock transport, no /dev/i2c.
+#
+#   cd docker
+#   docker compose -f compose.dev.yml up --build
+#   open http://localhost:8080
+
+name: charara-dev
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: docker/console.Dockerfile
+    container_name: charara-api-dev
+    environment:
+      ROBOT_TRANSPORT: mock
+      FIELD_WIDTH_MM: "3000"
+      FIELD_HEIGHT_MM: "2000"
+    volumes:
+      - strategies-dev:/data/strategies
+    ports:
+      - "8000:8000"
+
+  ui:
+    build:
+      context: ..
+      dockerfile: docker/ui.Dockerfile
+    container_name: charara-ui-dev
+    depends_on:
+      - api
+    ports:
+      - "8080:80"
+
+volumes:
+  strategies-dev:

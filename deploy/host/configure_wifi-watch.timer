@@ -1,0 +1,13 @@
+[Unit]
+Description=Periodically re-check the Charara network (Wi-Fi preferred)
+
+[Timer]
+# First run 2 min after the timer is (re)started, then every 2 min after each
+# run - so enabling the timer mid-session never fires immediately.
+OnActiveSec=2min
+OnUnitInactiveSec=2min
+AccuracySec=15s
+Unit=configure_wifi-watch.service
+
+[Install]
+WantedBy=timers.target

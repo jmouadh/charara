@@ -1,0 +1,8 @@
+[Unit]
+Description=Charara network watch (re-evaluate Wi-Fi vs hotspot)
+After=network-pre.target NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/configure_wifi.sh --reeval
