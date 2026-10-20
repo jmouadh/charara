@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Console user guide
+    url: https://github.com/jmouadh/charara/blob/main/Docs/04-console-guide.md
+    about: How the operator side works: tools, sequence, calibration, tests.
+  - name: Roadmap
+    url: https://github.com/jmouadh/charara/blob/main/Docs/10-roadmap.md
+    about: Track A (continuity), Track B (streaming pursuit), Track C (match layer).

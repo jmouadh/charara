@@ -1,0 +1,51 @@
+name: Feature request
+description: Propose a capability, with the constraint it must respect
+title: "[FEAT] "
+labels: ["type/feature", "needs/triage"]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Firmware (STM32)
+        - Software (Raspberry Pi)
+        - Planner / motion
+        - Vision / camera
+        - Console / UI
+        - Hardware / wiring
+        - Documentation
+        - CI / tooling
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What is hard or impossible today? Who hits it, when?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: The behaviour you want. Keep the real-time budget in mind (no servo loop over Wi-Fi/I2C).
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: false
+  - type: dropdown
+    id: risk
+    attributes:
+      label: Risk to the running robot
+      options:
+        - None - offline / documentation only
+        - Low - console or tooling
+        - Medium - planner or protocol, testable in MOCK
+        - High - firmware or motion, needs bench validation
+    validations:
+      required: true

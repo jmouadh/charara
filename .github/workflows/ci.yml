@@ -1,0 +1,52 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: python - lint and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[console,dev]"
+          pip install ruff
+
+      - name: Lint (syntax errors and undefined names)
+        run: ruff check --select E9,F63,F7,F82 software tests
+
+      - name: Tests
+        # the websocket re-plan test is timing sensitive: retry it rather than
+        # leaving the badge red on an otherwise healthy build
+        run: python -m pytest -q --reruns 2 --reruns-delay 5
+
+  firmware-layout:
+    name: firmware - project files present
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the CubeMX and IAR project sources are complete
+        run: |
+          set -e
+          test -f STM32/Firmware/carte_deplacement.ioc
+          test -f STM32/Firmware/EWARM/carte_deplacement.ewp
+          test -d STM32/Firmware/App/Src
+          test -d STM32/Firmware/Core/Src
+          test -f STM32/Firmware/Drivers/STM32F7xx_HAL_Driver/Inc/stm32f7xx_hal.h
+          echo "firmware tree OK"

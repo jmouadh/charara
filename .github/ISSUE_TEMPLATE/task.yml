@@ -1,0 +1,48 @@
+name: Task
+description: A known piece of work (no investigation needed)
+title: "[TASK] "
+labels: ["type/task", "needs/triage"]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Firmware (STM32)
+        - Software (Raspberry Pi)
+        - Planner / motion
+        - Vision / camera
+        - Console / UI
+        - Hardware / wiring
+        - Documentation
+        - CI / tooling
+    validations:
+      required: true
+  - type: dropdown
+    id: size
+    attributes:
+      label: Estimated size
+      options: ["1 - trivial", "2 - small", "3 - half day", "5 - a day", "8 - multi-day"]
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: What is in scope, and explicitly what is not.
+    validations:
+      required: true
+  - type: textarea
+    id: done
+    attributes:
+      label: Definition of done
+      description: How do we know it is finished? Tests, measurements, documents updated.
+    validations:
+      required: true
+  - type: input
+    id: reference
+    attributes:
+      label: Reference
+      description: Link to the roadmap section or design document, e.g. docs/10-roadmap.md section 6.3
+    validations:
+      required: false
