@@ -21,6 +21,12 @@ project uses [Semantic Versioning](https://semver.org/).
 - Repository scaffolding: issue forms (bug / feature / task), pull request
   template, `CODEOWNERS`, CI (lint + full test suite + firmware tree check),
   `CONTRIBUTING.md` and this changelog.
+- Documentation site: `mkdocs.yml` (Material theme, `Docs/` as source) and the
+  `pages` workflow, published at <https://jmouadh.github.io/charara/>.
+- `deploy.ps1` - pack, upload over SSH, provision the I2C buses and rebuild the
+  docker stack on the robot, with `-NoRebuild`, `-NoClean`, `-NoProvision`,
+  `-UseKey` and `-SetupKey` (the entry point `deploy.cmd` already referenced).
+- `SECURITY.md` - private vulnerability reporting and the credential policy.
 - Console screenshot set under `Docs/assets/screenshots/`, embedded in the
   `README.md` gallery and the console guide.
 - `LICENSE` (BSD-3-Clause), with the vendor licenses of the ST HAL and CMSIS
