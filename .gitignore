@@ -1,0 +1,48 @@
+# --- secrets / local machine config ---
+docker/.env
+deploy/host/network.env
+*.pem
+*.key
+*.p12
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# --- STM32 / IAR EWARM build outputs ---
+STM32/backup/
+STM32/**/EWARM/**/Obj/
+STM32/**/EWARM/**/List/
+STM32/**/EWARM/**/Exe/
+STM32/**/EWARM/**/BrowseInfo/
+STM32/**/EWARM/settings/
+*.dep
+*.pbw
+*.bak
+.ninja_deps
+.ninja_log
+
+# Prebuilt IAR math libraries: not referenced by any .ewp project (104 MB)
+**/CMSIS/Lib/
+
+# Test artefacts
+pytest_out.txt
+
+# --- archives (keep outside git: drive or release assets) ---
+*.zip
+*.rar
+*.7z
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+.idea/
+*.log

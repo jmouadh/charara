@@ -1,0 +1,26 @@
+* text=auto
+
+# Shell scripts must stay LF even when cloned on Windows
+*.sh text eol=lf
+
+# Windows entry points stay CRLF
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# IAR / CubeMX project files: keep the vendor's CRLF
+*.ewp text eol=crlf
+*.eww text eol=crlf
+*.ewd text eol=crlf
+*.ewt text eol=crlf
+*.icf text eol=crlf
+*.ioc text eol=lf
+
+# Binary assets
+*.pdf binary
+*.lib binary
+*.hex binary
+*.bin binary
+*.png binary
+*.jpg binary
+*.jpeg binary
