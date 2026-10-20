@@ -1,6 +1,6 @@
 # Charara - Documentation
 
-![Charara: CAD model and the robot as built](assets/charara-robot.jpg)
+![Charara: CAD model and the robot as built](assets/hero/robot-cad-and-built.jpg)
 
 This folder documents the **robot software** (`software/`: console service +
 brain runtime) and the **web console** of the Charara robot. It is

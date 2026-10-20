@@ -1,5 +1,5 @@
 site_name: Charara
-site_description: Autonomous Eurobot 2026 robot - STM32 firmware, Raspberry Pi planning stack, web console and design documentation.
+site_description: Autonomous mecanum-wheel robot - custom STM32F722 electronics, Raspberry Pi planning stack, web console and the full engineering documentation.
 site_author: Mouadh Jeridi
 site_url: https://jmouadh.github.io/charara/
 repo_url: https://github.com/jmouadh/charara
