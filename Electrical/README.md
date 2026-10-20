@@ -6,9 +6,9 @@ Hardware sources for the robot's electronics.
 |---|---|
 | `Schematics/carte_deplacement_schematics.pdf` | Full schematic of the controller board: MCU, stepper drivers, power stage, connectors |
 | `Routing/` | PCB routing captures, one per layer |
-| `hw_real.jpeg` | Raw photo of the assembled board (kept out of git; the optimised copy is `../Docs/assets/hardware-electronics.jpg`) |
+| `hw_real.jpeg` | Raw photo of the assembled board (kept out of git; the optimised copy is `../Docs/assets/hardware/board.jpg`) |
 
-![The assembled controller board](../Docs/assets/hardware-electronics.jpg)
+![The assembled controller board](../Docs/assets/hardware/board.jpg)
 
 The board carries the STM32F722, four stepper drivers under heatsinks, the power
 stage, the I2C and encoder connectors, and a status OLED. The firmware that runs
