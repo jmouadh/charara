@@ -52,6 +52,23 @@ flowchart LR
     BRAIN -- I2C (run one at a time) --> STM
 ```
 
+## Hardware
+
+The electronics are designed in-house: one board carrying the STM32F722, four
+stepper drivers with heatsinks, the power stage and the I2C / encoder
+connectors, with a small OLED for the robot status. The frame mixes
+3D-printed structural parts with aluminium plates, and the drive modules carry
+the mecanum wheels.
+
+[![The assembled Charara controller board](Docs/assets/hardware-electronics.jpg)](Docs/assets/hardware-electronics.jpg)
+
+<sub><b>The controller board as assembled:</b> STM32F722, four stepper drivers
+under heatsinks, the power stage and the status OLED showing the Charara
+logo.</sub>
+
+Sources: [`Electrical/`](Electrical/) (schematic, PCB routing) and
+[`Mecanical/`](Mecanical/) (CAD captures).
+
 ## The console in pictures
 
 A live session against the real STM32 board (`SW 3.2.0`, `FW 3.5`): the mission
