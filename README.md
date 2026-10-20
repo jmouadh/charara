@@ -6,6 +6,13 @@
 ![python](https://img.shields.io/badge/python-3.11%2B-3776ab)
 ![firmware](https://img.shields.io/badge/firmware-STM32F722-03234b)
 
+[![Charara: the CAD model on the left, the robot as built on the right](Docs/assets/charara-robot.jpg)](Docs/assets/charara-robot.jpg)
+
+<sub><b>Designed, built, programmed.</b> CAD model (left) and the robot as built
+(right): four mecanum wheels on steppers, the STM32F722 driver board, the
+Raspberry Pi 4, the power stack - and, in the foreground, a printed drive
+gearbox.</sub>
+
 *Author: Mouadh Jeridi - jeridimouadh@gmail.com*
 
 **Documentation site:** <https://jmouadh.github.io/charara/>
@@ -44,6 +51,23 @@ flowchart LR
     API -- I2C 100 kHz, /dev/i2c-1 --> STM[STM32F722<br/>robot firmware]
     BRAIN -- I2C (run one at a time) --> STM
 ```
+
+## Hardware
+
+The electronics are designed in-house: one board carrying the STM32F722, four
+stepper drivers with heatsinks, the power stage and the I2C / encoder
+connectors, with a small OLED for the robot status. The frame mixes
+3D-printed structural parts with aluminium plates, and the drive modules carry
+the mecanum wheels.
+
+[![The assembled Charara controller board](Docs/assets/hardware-electronics.jpg)](Docs/assets/hardware-electronics.jpg)
+
+<sub><b>The controller board as assembled:</b> STM32F722, four stepper drivers
+under heatsinks, the power stage and the status OLED showing the Charara
+logo.</sub>
+
+Sources: [`Electrical/`](Electrical/) (schematic, PCB routing) and
+[`Mecanical/`](Mecanical/) (CAD captures).
 
 ## The console in pictures
 
