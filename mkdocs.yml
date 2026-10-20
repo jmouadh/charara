@@ -1,0 +1,91 @@
+site_name: Charara
+site_description: Autonomous Eurobot 2026 robot - STM32 firmware, Raspberry Pi planning stack, web console and design documentation.
+site_author: Mouadh Jeridi
+site_url: https://jmouadh.github.io/charara/
+repo_url: https://github.com/jmouadh/charara
+repo_name: jmouadh/charara
+edit_uri: edit/main/Docs/
+
+docs_dir: Docs
+site_dir: site
+
+# keep .html URLs so the relative image and page links used in Docs/ keep
+# working exactly as they do on GitHub
+use_directory_urls: false
+
+theme:
+  name: material
+  language: en
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - content.code.copy
+    - content.action.edit
+    - search.suggest
+    - search.highlight
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: deep orange
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: deep orange
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  icon:
+    repo: fontawesome/brands/github
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - tables
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+  - pymdownx.snippets
+
+plugins:
+  - search
+
+nav:
+  - Overview: 00-index.md
+  - Design:
+      - System overview: 01-system-overview.md
+      - Backend architecture: 02-backend-architecture.md
+      - Planner algorithms: 03-planner-algorithms.md
+      - Brain and strategies: 08-brain-and-strategies.md
+      - Sensor fusion and control: 09-sensor-fusion-and-control-architecture.md
+  - Using it:
+      - Console guide: 04-console-guide.md
+      - API reference: 05-api-reference.md
+      - Vision and camera: 06-vision-camera-integration.md
+  - Working on it:
+      - Development guide: 07-development-guide.md
+      - Roadmap: 10-roadmap.md
+  - STM32 hand-off:
+      - Hardware and wiring: STM_docs/01-hardware-and-wiring.md
+      - Firmware architecture: STM_docs/02-firmware-architecture.md
+      - I2C protocol: STM_docs/03-i2c-protocol-spec.md
+      - Motion, odometry and safety: STM_docs/04-motion-odometry-and-safety.md
+      - Raspberry Pi integration: STM_docs/05-rpi-integration-guide.md
+      - Bring-up, testing, tuning: STM_docs/06-bringup-testing-tuning.md
+      - Changelog v2: STM_docs/07-changelog-v2.md
+      - RGB LED status: STM_docs/08-rgb-led-status.md

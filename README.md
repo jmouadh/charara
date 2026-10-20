@@ -1,6 +1,14 @@
 # Charara - robot software (console, planner, brain)
 
+[![ci](https://github.com/jmouadh/charara/actions/workflows/ci.yml/badge.svg)](https://github.com/jmouadh/charara/actions/workflows/ci.yml)
+[![docs](https://github.com/jmouadh/charara/actions/workflows/pages.yml/badge.svg)](https://jmouadh.github.io/charara/)
+[![license](https://img.shields.io/badge/license-BSD--3--Clause-blue.svg)](LICENSE)
+![python](https://img.shields.io/badge/python-3.11%2B-3776ab)
+![firmware](https://img.shields.io/badge/firmware-STM32F722-03234b)
+
 *Author: Mouadh Jeridi - jeridimouadh@gmail.com*
+
+**Documentation site:** <https://jmouadh.github.io/charara/>
 
 Software for the Raspberry Pi next to the Eurobot table, one Python package
 (`software/`) with two applications:

@@ -50,7 +50,32 @@ python -m pytest tests/test_api.py -q
 ```
 
 The suite covers the planner, the protocol codec, the mission engine and the
-console API against the MOCK board.
+console API against the MOCK board. The documented runner is `unittest`:
+
+```bash
+python -m unittest discover -s tests
+```
+
+## Documentation site
+
+The `Docs/` folder is published as a site (Material for MkDocs):
+
+```bash
+pip install -r requirements-docs.txt
+mkdocs serve                              # http://127.0.0.1:8000
+mkdocs build --strict                     # what CI runs
+```
+
+Add new pages to the `nav` in `mkdocs.yml`; the `pages` workflow deploys `main`
+to <https://jmouadh.github.io/charara/>.
+
+## Deploying to the robot
+
+```powershell
+.\deploy.cmd                    # double click, or:
+.\deploy.ps1 -UseKey            # no password prompt (after -SetupKey once)
+.\deploy.ps1 -NoRebuild         # sync files only
+```
 
 ## Project board
 
