@@ -1,0 +1,31 @@
+{
+  "name": "collect-main",
+  "version": 1,
+  "updated_at": 0,
+  "field": {
+    "width_mm": 3000.0,
+    "height_mm": 2000.0
+  },
+  "goal": null,
+  "obstacles": [],
+  "team": "yellow",
+  "start_pose": [315.0, 1800.0, -90.0],
+  "options": {
+    "speed_mm_s": 250
+  },
+  "elements": [
+    {
+      "kind": "stroke",
+      "points": [[700, 1500], [1150, 1500]]
+    },
+    {
+      "kind": "rotate",
+      "angle_deg": 90
+    },
+    {
+      "kind": "stroke",
+      "points": [[1150, 1500], [1150, 1100]]
+    }
+  ],
+  "notes": "PLACEHOLDER main task for the match-2026 tree (Track C): a short L tour from the Yellow start. Replace the elements with the real drawing and keep the name, or point the tree's run_document at your own document."
+}

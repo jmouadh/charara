@@ -1,0 +1,875 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Charara - Field Console</title>
+  <link rel="icon" type="image/png" sizes="192x192" href="logo/charara-mark.png"/>
+  <link rel="apple-touch-icon" href="logo/charara-mark.png"/>
+  <link rel="stylesheet" href="css/style.css?v=63"/>
+</head>
+<body>
+  <header>
+    <div class="header-left">
+      <div class="brand">
+        <img class="logo" src="logo/charara-emblem.png" alt="" aria-hidden="true"/>
+        <span class="brand-text">
+          <span class="name">Charara</span>
+          <span class="sub">field console</span>
+        </span>
+      </div>
+      <select id="team-select" class="team-select" disabled autocomplete="off"
+              title="Which side we play - sets our match-start pose and the opponent's, and mirrors symmetric strategies authored for the other side.">
+        <option value="yellow">YELLOW</option>
+        <option value="blue">BLUE</option>
+      </select>
+    </div>
+    <div class="header-right">
+      <div class="pills">
+        <span id="camera-pill" class="pill icon" data-tip="Camera / vision channel - state appears with telemetry" role="img" aria-label="Camera channel status">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.8 12h3.6a1 1 0 0 1 .9 1.45l-2 4.07a1 1 0 0 1-1.71.13l-2.12-2.97"/><path d="M17.1 9.05a1 1 0 0 1 .45 1.34l-3.1 6.21a1 1 0 0 1-1.35.45L3.6 12.3a2.92 2.92 0 0 1-1.3-3.91L3.7 5.6a2.92 2.92 0 0 1 3.92-1.3z"/><path d="M2 19h3.76a2 2 0 0 0 1.8-1.1L9 15"/><path d="M2 21v-4"/><path d="M7 9h.01"/></svg>
+        </span>
+        <span id="imu-pill" class="pill" data-tip="IMU status - state appears with telemetry" aria-label="IMU status">IMU</span>
+        <select id="mode-select" class="mode-select" disabled
+                title="Robot link - REAL talks to the board over I2C, MOCK simulates every answer. Switching is refused while a path is executing.">
+          <option value="i2c">REAL</option>
+          <option value="mock">MOCK</option>
+        </select>
+        <span id="robot-pill" class="pill off" title="I2C link to the STM32">ROBOT</span>
+        <span id="state-pill" class="pill" title="Motion state">-</span>
+        <span id="exec-pill" class="pill hidden" title="Path execution">-</span>
+      </div>
+      <button id="btn-fullscreen" class="icon-btn fullscreen" type="button" title="Enter full screen">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H4v5"/><path d="M15 4h5v5"/><path d="M15 20h5v-5"/><path d="M9 20H4v-5"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <main>
+    <aside id="panel">
+      <div class="panel-title">Mission</div>
+      <div class="row clear-row">
+        <button id="btn-clear-path" class="ghost">Clear path</button>
+        <button id="btn-clear-obs" class="ghost">Clear obstacles</button>
+      </div>
+
+      <div id="page-mission">
+      <section class="card">
+        <h3>Tools</h3>
+        <div class="tools">
+          <button class="tool" data-tool="pose" title="Place the robot by hand: click its position, drag to aim the heading">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v4M12 17.5v4M2.5 12h4M17.5 12h4"/></svg>
+            <span>Pose</span>
+          </button>
+          <button class="tool" data-tool="draw" title="Draw a path - the start snaps to the robot or the previous path end">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20l1.1-4.2L16.9 4.1a1.9 1.9 0 0 1 2.7 0l.3.3a1.9 1.9 0 0 1 0 2.7L8.2 18.9z"/><path d="M14.8 6.2l3 3"/></svg>
+            <span>Draw</span>
+          </button>
+          <button class="tool" data-tool="goal" title="Click to place the goal, drag to aim the arrival heading">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 21V3.8"/><path d="M5.5 4.5h12.2l-2.6 3.9 2.6 3.9H5.5z"/></svg>
+            <span>Goal</span>
+          </button>
+          <button class="tool" data-tool="waypoint" title="Click near a path to add a waypoint (it snaps and splits the path); click an existing waypoint to edit its position and arrival angle">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5l8.5 8.5-8.5 8.5L3.5 12z"/></svg>
+            <span>Waypoint</span>
+          </button>
+          <button class="tool" data-tool="pause" title="Add a timed delay: enter the seconds, then press Add delay">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>
+            <span>Delay</span>
+          </button>
+          <button class="tool" data-tool="rotate" title="Add an in-place turn: positive = CCW, negative = CW">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 12a8.5 8.5 0 1 0 9-8.5 9.2 9.2 0 0 0-6.4 2.6L3.5 8.5"/><path d="M3.5 3.5v5h5"/><path d="M12 8.5V12l2.5 1.5"/></svg>
+            <span>Turn</span>
+          </button>
+          <button class="tool" data-tool="forward" title="Add a straight forward move along the heading held at that point">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20V6"/><path d="M6.5 11.5 12 6l5.5 5.5"/><path d="M5 21h14" stroke-dasharray="2 3"/></svg>
+            <span>Forward</span>
+          </button>
+          <button class="tool" data-tool="back" title="Add a straight backward move - the robot reverses without turning around">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v14"/><path d="M6.5 12.5 12 18l5.5-5.5"/><path d="M5 3h14" stroke-dasharray="2 3"/></svg>
+            <span>Back</span>
+          </button>
+          <button class="tool" data-tool="release" title="Release the stepper motors: add a release step to the sequence, or release now after the robot has completely stopped">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 11V8a5 5 0 0 1 9.6-2"/><path d="M17 13v3a5 5 0 0 1-9.6 2"/><rect x="4.5" y="10.5" width="5" height="4" rx="1"/><rect x="14.5" y="10.5" width="5" height="4" rx="1"/></svg>
+            <span>Release</span>
+          </button>
+          <button class="tool" data-tool="rect" title="Drag a rectangular STATIC obstacle (locks while the robot executes)">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4.5" y="4.5" width="15" height="15" rx="2"/></svg>
+            <span>Box</span>
+          </button>
+          <button class="tool" data-tool="circle" title="Drag a circular STATIC zone (locks while the robot executes)">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7.6"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/></svg>
+            <span>Zone</span>
+          </button>
+          <button class="tool active" data-tool="pan" title="Drag to pan the map - wheel zooms">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5v17M3.5 12h17"/><path d="M12 3.5 9.8 5.7M12 3.5l2.2 2.2M12 20.5l-2.2-2.2M12 20.5l2.2-2.2M3.5 12l2.2-2.2M3.5 12l2.2 2.2M20.5 12l-2.2-2.2M20.5 12l-2.2 2.2"/></svg>
+            <span>Pan</span>
+          </button>
+          <button class="tool" data-tool="erase" title="Click a path, obstacle or the goal to remove it">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.2 16.6l8.2-8.2a2 2 0 0 1 2.8 0l3.4 3.4a2 2 0 0 1 0 2.8L13.4 19.8H8z"/><path d="M9.4 11.4l5.2 5.2"/><path d="M7.5 21h12"/></svg>
+            <span>Erase</span>
+          </button>
+          <button class="tool" data-tool="ruler" title="Ruler: click two points to measure the distance between them (click again for a new measurement)">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 16.5 16.5 3.5l4 4-13 13z"/><path d="M7.5 12.5l2 2M10.5 9.5l2 2M13.5 6.5l2 2"/></svg>
+            <span>Ruler</span>
+          </button>
+          <button class="tool" data-tool="angle" title="Angle: click the centre point, then the two ray points - the angle between them is measured">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5h16"/><path d="M4 19.5 17 6.5"/><path d="M12.5 19.5a8.5 8.5 0 0 0 2.3-5.6"/></svg>
+            <span>Angle</span>
+          </button>
+        </div>
+        <div id="tool-params" class="tool-params hidden">
+          <div class="tp-head">
+            <span id="tool-params-title">Delay</span>
+            <button id="tool-params-close" class="tp-close" type="button" title="Close (Esc)">×</button>
+          </div>
+          <div id="tp-pause" class="tp-group hidden">
+            <label class="tp-field">Delay
+              <span class="field"><input id="seq-pause" type="number" value="2" step="0.5" min="0.1" max="120"/><span class="unit">s</span></span>
+            </label>
+            <button id="btn-add-pause" class="primary tp-add" type="button">Add delay</button>
+          </div>
+          <div id="tp-rotate" class="tp-group hidden">
+            <label class="tp-field">Turn CCW
+              <span class="field"><input id="seq-angle" type="number" value="90" step="5" min="-360" max="360"/><span class="unit">deg</span></span>
+            </label>
+            <label class="tp-field" title="Speed for this rotation only (mm/s). Leave empty to use the system speed.">Speed
+              <span class="field"><input id="seq-turn-speed" type="number" step="10" min="100" max="900" placeholder="system"/><span class="unit">mm/s</span></span>
+            </label>
+            <button id="btn-add-rotate" class="primary tp-add" type="button">Add turn</button>
+          </div>
+          <div id="tp-drive" class="tp-group hidden">
+            <label class="tp-field"><span id="tp-drive-direction">Forward</span>
+              <span class="field"><input id="seq-advance" type="number" value="100" step="10" min="0" max="3000"/><span class="unit">mm</span></span>
+            </label>
+            <label class="tp-field" title="Speed for this move only (mm/s). Leave empty to use the system speed.">Speed
+              <span class="field"><input id="seq-advance-speed" type="number" step="10" min="100" max="900" placeholder="system"/><span class="unit">mm/s</span></span>
+            </label>
+            <button id="btn-add-drive" class="primary tp-add" type="button">Add forward</button>
+          </div>
+          <div id="tp-release" class="tp-group hidden">
+            <p class="hint tp-note">Release is only allowed when the robot is completely stopped. It turns the drivers off without latching E-STOP; the next move re-energizes them automatically.</p>
+            <div class="row">
+              <button id="btn-add-release" class="primary tp-add" type="button">Add release step</button>
+              <button id="btn-release-now" class="ghost tp-add" type="button">Release now</button>
+            </div>
+          </div>
+          <div id="tp-waypoint" class="tp-group hidden">
+            <label class="tp-field" title="Speed used for the next waypoint(s) you place. Empty = system speed.">Waypoint speed
+              <span class="field"><input id="seq-waypoint-speed" type="number" step="10" min="100" max="900" placeholder="system"/><span class="unit">mm/s</span></span>
+            </label>
+          </div>
+          <div id="tp-draw" class="tp-group hidden">
+            <label class="tp-field" title="Speed used for the next path(s) you draw. Empty = system speed.">Draw speed
+              <span class="field"><input id="seq-draw-speed" type="number" step="10" min="100" max="900" placeholder="system"/><span class="unit">mm/s</span></span>
+            </label>
+          </div>
+        </div>
+        <p class="hint tool-note" id="tool-hint">Drag to pan - wheel zooms.</p>
+        <details class="hint-fold">
+          <summary>Details</summary>
+          <p class="hint">The dashed squares <b>R1...</b> (300x300 mm) are the opponent robots - this console reports them to the service like a camera does (<b>count and positions in Config</b>). <b>Drag them anytime, also while your robot drives.</b> The service reacts only when the other robot gets <b>close to yours</b> (~0.7 m): then it re-routes, or stops and waits until the way is clear, and continues by itself. A robot sitting on the path <b>far ahead changes nothing</b> - it is re-checked as your robot approaches. If a <b>real camera</b> streams on the vision channel, the console yields and that input is used. Box/Zone are static obstacles: they lock while the robot moves.</p>
+        </details>
+      </section>
+
+      <section class="card">
+        <h3>Sequence <small>- executed in order</small></h3>
+        <div id="seq-list" class="seq-list"></div>
+        <div class="row seq-actions">
+          <button id="btn-undo" class="ghost m-btn" title="Undo the last edit of the sequence">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7H15a5 5 0 0 1 0 10h-3"/><path d="M11.5 4 8.5 7l3 3"/></svg>
+            <span>Undo</span>
+          </button>
+          <button id="btn-redo" class="ghost m-btn" title="Redo the last undone edit">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 7H9a5 5 0 0 0 0 10h3"/><path d="M12.5 4l3 3-3 3"/></svg>
+            <span>Redo</span>
+          </button>
+        </div>
+        <details class="hint-fold">
+          <summary>Details</summary>
+          <p class="hint">Each new path starts from the previous endpoint - draw close to it and the start snaps. Rotations are split into <=170 deg chunks on the board; the ghost preview acts every step out.</p>
+        </details>
+      </section>
+
+      <section class="card">
+        <h3>Mission</h3>
+        <div class="m-group">
+          <div class="m-label">Target</div>
+          <div class="row m-target">
+            <label>Goal theta <input id="goal-theta" type="number" step="5" min="-180" max="180" placeholder="drag to aim"/></label>
+            <span class="unit">deg</span>
+            <button id="btn-goal-clear" class="ghost m-btn" title="Remove the goal from the map">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+              <span>Clear</span>
+            </button>
+          </div>
+        </div>
+        <div class="m-group">
+          <div class="m-label">Prepare &amp; run</div>
+          <div class="grid2">
+            <button id="btn-plan" class="primary m-btn">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5.5" cy="18.5" r="1.8"/><circle cx="18.5" cy="5.5" r="1.8"/><path d="M6.5 17.1C8.4 12.4 11 12 12 12s3.6-.4 5.4-5.1"/></svg>
+              <span>Plan</span>
+            </button>
+            <button id="btn-setpose" class="primary m-btn" title="Tell the UI and board where you placed the robot by hand - nothing moves">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v4M12 17.5v4M2.5 12h4M17.5 12h4"/></svg>
+              <span>Set Pose</span>
+            </button>
+            <button id="btn-exec" class="go m-btn span2" disabled title="Run the last plan - pressable again to replay it">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.5 5.2v13.6L18.5 12z" fill="currentColor" stroke="none"/></svg>
+              <span>Execute</span>
+            </button>
+            <button id="btn-replay" class="m-btn" disabled title="Mock rehearsal: replay the last run from its exact start pose (available in MOCK after a run)">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3"/><path d="M4.5 4.5V10h5.5"/><path d="M12 9.2v3l2.1 1.4"/></svg>
+              <span>Redo</span>
+            </button>
+            <button id="btn-pause" class="m-btn" title="Stop in place - resume continues with the next node">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="5" width="3.6" height="14" rx="1" fill="currentColor" stroke="none"/><rect x="13.4" y="5" width="3.6" height="14" rx="1" fill="currentColor" stroke="none"/></svg>
+              <span>Pause</span>
+            </button>
+            <button id="btn-resume" class="m-btn" title="Continue a paused run">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.5 5.2v13.6L18.5 12z" fill="currentColor" stroke="none"/></svg>
+              <span>Resume</span>
+            </button>
+          </div>
+        </div>
+        <div class="m-group">
+          <div class="m-label">Safety</div>
+          <div class="grid2">
+            <button id="btn-stop" class="warn m-btn" title="Abort the run - the robot holds position">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5" fill="currentColor" stroke="none"/></svg>
+              <span>Stop</span>
+            </button>
+            <button id="btn-estop" class="danger m-btn" title="Latched emergency stop - clear the faults afterwards">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.2 3h7.6L21 8.2v7.6L15.8 21H8.2L3 15.8V8.2z"/><path d="M12 7.8v5" stroke-linecap="round"/><circle cx="12" cy="16.4" r="1" fill="currentColor" stroke="none"/></svg>
+              <span>E-STOP</span>
+            </button>
+            <button id="btn-clear" class="ghost m-btn span2" title="Clear the latched board faults">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 2.6v5.2c0 4.4-3 8.2-7 10.2-4-2-7-5.8-7-10.2V5.6z"/><path d="M9 11.6l2.2 2.2 4.2-4.6"/></svg>
+              <span>Clear Faults</span>
+            </button>
+            <button id="btn-release" class="ghost m-btn span2" title="Release the stepper motors (drivers off) when the robot stands still - saves battery. Allowed only after a movement has completely finished; the next move re-energizes the drivers automatically.">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 11V8a5 5 0 0 1 9.6-2"/><path d="M17 13v3a5 5 0 0 1-9.6 2"/><rect x="4.5" y="10.5" width="5" height="4" rx="1"/><rect x="14.5" y="10.5" width="5" height="4" rx="1"/></svg>
+              <span>Release motors</span>
+            </button>
+          </div>
+        </div>
+        <div class="stats" id="plan-stats">No plan yet - draw a path (or a goal) and press Plan.</div>
+      </section>
+
+      <section class="card" id="strategy-card">
+        <h3>Strategy <small>- validate each run, then save</small></h3>
+        <div id="strat-verify" class="strat-verify hidden">
+          <div class="strat-verify-text" id="strat-verify-text"></div>
+          <div class="row strat-verify-actions">
+            <button id="strat-add" class="primary m-btn" title="Append the finished step to the strategy">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+              <span>Add step</span>
+            </button>
+            <button id="strat-keep" class="ghost m-btn hidden" title="Keep the drawn step on the map for another try">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12a8 8 0 1 0 2.3-5.7"/><path d="M4 4.5V10h5.5"/></svg>
+              <span>Keep for retry</span>
+            </button>
+            <button id="strat-discard" class="ghost m-btn" title="Throw the tested step away">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+              <span>Discard</span>
+            </button>
+          </div>
+        </div>
+        <div class="m-group">
+          <div class="m-label">Document</div>
+          <div class="row strat-row">
+            <label class="strat-field">Name
+              <span class="field"><input id="strat-name" type="text" maxlength="64" placeholder="eurobot-match"/></span>
+            </label>
+            <button id="strat-new" class="ghost m-btn" title="Start a new empty strategy">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+              <span>New</span>
+            </button>
+          </div>
+          <div class="row strat-row">
+            <label class="strat-field">Load
+              <span class="field"><select id="strat-list"><option value="">(no saved strategies)</option></select></span>
+            </label>
+          </div>
+          <div class="row strat-row">
+            <button id="strat-load" class="m-btn" title="Load the selected strategy to review or extend it">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5v11"/><path d="M7.5 10 12 14.5 16.5 10"/><path d="M4.5 17.5v2a1 1 0 0 0 1 1h13a1 1 0 0 0 1-1v-2"/></svg>
+              <span>Load</span>
+            </button>
+            <button id="strat-save" class="primary m-btn" title="Save the strategy file (shared with the brain) - while editing, the sequence is written back to the file">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4.5h11L19.5 8v11.5a1 1 0 0 1-1 1h-13a1 1 0 0 1-1-1v-14a1 1 0 0 1 1-1z"/><path d="M8 4.5V9h7V4.5"/><path d="M8 20v-6h8v6"/></svg>
+              <span>Save</span>
+            </button>
+          </div>
+        </div>
+        <div class="m-group">
+          <div class="m-label">Playback</div>
+          <div class="row strat-row strat-actions">
+            <button id="strat-run" class="go m-btn" disabled title="Plan and run the WHOLE strategy from the robot's current pose (obstacles included) - press again to replay">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.5 5.2v13.6L18.5 12z" fill="currentColor" stroke="none"/></svg>
+              <span>Run</span>
+            </button>
+            <button id="strat-edit" class="m-btn" disabled title="Move the strategy into the sequence so every tool edits it (draw, erase, waypoints, order); Save writes it back to the file">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 19.5l1-4L16.6 4.4a1.6 1.6 0 0 1 2.3 0l.7.7a1.6 1.6 0 0 1 0 2.3L8.5 18.5l-4 1z"/><path d="M14.8 6.2l3 3"/></svg>
+              <span>Edit</span>
+            </button>
+          </div>
+          <label class="check strat-check" title="Draw the validated steps on the map as a dim green reference (they are part of the strategy, not of the pending sequence)">
+            <input id="strat-show" type="checkbox"/> show committed steps on the map
+          </label>
+        </div>
+        <div class="stats" id="strat-status">No strategy yet - name it, plan &amp; run a step, then Add it here.</div>
+        <details class="hint-fold">
+          <summary>How the workflow works</summary>
+          <p class="hint">Draw one step and <b>Plan</b> + <b>Execute</b> it - the robot always starts from where it stands, so every new plan covers <b>only the new work</b>. When the run finishes, <b>validate it here</b>: <b>Add step</b> appends it to the strategy (kept on the map, drawn dim green), <b>Discard</b> throws a test away. <b>Save</b> writes <code>&lt;name&gt;.json</code> - the brain plays exactly this file later, re-planning from the robot's real position. <b>Load</b> brings a saved strategy back to review or extend it. <b>Run</b> plans and drives the WHOLE strategy from the robot's current position (press it again to replay). <b>Edit</b> moves the strategy into the sequence so every tool modifies it - draw, erase, waypoints, order - then plan it with the normal buttons and <b>Save</b> writes it back to the file.</p>
+        </details>
+      </section>
+
+      <section class="card">
+        <h3>Drive pad <small>- verify directions</small></h3>
+        <div class="pad">
+          <div class="pad-values">
+            <label>Distance <span class="field"><input id="pad-dist" type="number" value="100" step="10" min="1"/><span class="unit">mm</span></span></label>
+            <label>Turn <span class="field"><input id="pad-turn" type="number" value="90" step="5" min="-180" max="180"/><span class="unit">deg</span></span></label>
+          </div>
+          <div class="dpad">
+            <button id="pad-forward" class="pad-btn up" title="Drive forward by the distance">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20V5"/><path d="M6 11l6-6 6 6"/></svg>
+              <span class="pad-cap">+100 mm</span>
+            </button>
+            <button id="pad-turn-ccw" class="pad-btn left" title="Turn left (CCW) by the angle">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.7 9.7 0 0 0-6.7 2.7L3 8"/><path d="M3 3v5h5"/></svg>
+              <span class="pad-cap">+90°</span>
+            </button>
+            <button id="pad-back" class="pad-btn down" title="Drive backward by the distance">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v15"/><path d="M6 13l6 6 6-6"/></svg>
+              <span class="pad-cap">-100 mm</span>
+            </button>
+            <button id="pad-turn-cw" class="pad-btn right" title="Turn right (CW) by the angle">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-9-9 9.7 9.7 0 0 1 6.7 2.7L21 8"/><path d="M21 3v5h-5"/></svg>
+              <span class="pad-cap">-90°</span>
+            </button>
+          </div>
+          <div class="pad-arcs">
+            <button data-move="arc" data-arg="90" class="pad-btn arc" title="Left arc: 300 mm radius, 90 deg, from the current spot">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 18C20 9.5 14.5 5.5 5 5.5"/><path d="M9 2.5 4.8 5.5 9 8.7"/></svg>
+              <span>Arc left</span><span class="pad-cap">R300</span>
+            </button>
+            <button data-move="arc" data-arg="-90" class="pad-btn arc" title="Right arc: 300 mm radius, 90 deg, from the current spot">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18C4 9.5 9.5 5.5 19 5.5"/><path d="M15 2.5l4.2 3L15 8.7"/></svg>
+              <span>Arc right</span><span class="pad-cap">R300</span>
+            </button>
+          </div>
+        </div>
+      </section>
+      </div><!-- /page-mission -->
+      <footer id="panel-footer" class="panel-footer">
+        <span class="ver" title="Console software version (RPi service + UI)">SW <b id="sw-version">-</b></span>
+        <span class="ver-sep"></span>
+        <span class="ver" title="STM32 board firmware version">FW <b id="fw-version">-</b></span>
+      </footer>
+    </aside>
+
+    <section id="viewport">
+      <div id="stage">
+        <canvas id="field-canvas"></canvas>
+        <div id="cursor-coords" class="cursor-coords hidden" title="Exact map coordinates under the cursor">
+          <span class="cc-k">x</span><b id="cursor-x">-</b>
+          <span class="cc-k">y</span><b id="cursor-y">-</b>
+          <span class="cc-u">mm</span>
+        </div>
+        <img class="stage-mark" src="logo/charara-mark.png" alt="" aria-hidden="true"/>
+        <div id="pose-popup" class="pose-popup hidden">
+          <div class="pp-head">Robot pose <span>- drag on the map to aim theta</span></div>
+          <div class="pp-row"><label for="pose-x">X</label><input id="pose-x" type="number" step="10"/><span class="u">mm</span></div>
+          <div class="pp-row"><label for="pose-y">Y</label><input id="pose-y" type="number" step="10"/><span class="u">mm</span></div>
+          <div class="pp-row"><label for="pose-th">theta</label><input id="pose-th" type="number" step="5" min="-180" max="180"/><span class="u">deg</span></div>
+          <div class="pp-actions">
+            <button id="pose-validate" class="primary">Validate</button>
+            <button id="pose-cancel" class="ghost" title="Cancel (Esc)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+          </div>
+        </div>
+        <div id="wp-popup" class="pose-popup wp-popup hidden">
+          <div class="pp-head">Waypoint <span>- pass-through point</span></div>
+          <div class="pp-row"><label for="wp-x">X</label><input id="wp-x" type="number" step="10"/><span class="u">mm</span></div>
+          <div class="pp-row"><label for="wp-y">Y</label><input id="wp-y" type="number" step="10"/><span class="u">mm</span></div>
+          <div class="pp-row"><label for="wp-th">arrival</label><input id="wp-th" type="number" step="5" min="-180" max="180" placeholder="none"/><span class="u">deg</span></div>
+          <div class="pp-row"><label for="wp-speed">speed</label><input id="wp-speed" type="number" step="10" min="100" max="900" placeholder="system"/><span class="u">mm/s</span></div>
+          <label class="pp-check" title="Weave the arrival angle into a short ARC approach instead of turning in place at the point">
+            <input id="wp-combine" type="checkbox"/> combine with the approach
+          </label>
+          <div class="pp-actions">
+            <button id="wp-apply" class="primary">Apply</button>
+            <button id="wp-delete" class="ghost" title="Remove this waypoint"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 7h15"/><path d="M9.5 7V4.8h5V7"/><path d="M6.3 7l1 12.6h9.4L17.7 7"/><path d="M10.2 10.5v6M13.8 10.5v6"/></svg></button>
+            <button id="wp-cancel" class="ghost" title="Close (Esc)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+          </div>
+        </div>
+        <div id="telemetry" class="overlay telemetry">
+          <div><span class="k">x</span><span id="t-x">-</span><span class="u">mm</span></div>
+          <div><span class="k">y</span><span id="t-y">-</span><span class="u">mm</span></div>
+          <div><span class="k">theta</span><span id="t-th">-</span><span class="u">deg</span></div>
+          <div><span class="k">vL</span><span id="t-vl">-</span><span class="u">mm/s</span></div>
+          <div><span class="k">vR</span><span id="t-vr">-</span><span class="u">mm/s</span></div>
+          <div><span class="k">faults</span><span id="t-faults">-</span></div>
+          <button id="telemetry-toggle" class="telemetry-toggle" type="button"
+                  title="Show / hide the wheel velocities" aria-label="Collapse or expand the pose readout">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2"
+                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.2l4 4 4-4"/></svg>
+          </button>
+        </div>
+        <div id="progress" class="overlay progress hidden"><div class="bar"><i></i></div><span id="progress-text"></span></div>
+        <div id="log" class="overlay log">
+          <div class="log-head">
+            <button id="log-toggle" class="ghost small" title="Collapse / expand the log panel" aria-label="Collapse or expand the log panel">
+              <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.2l4 4 4-4"/></svg>
+            </button>
+            <span class="log-title">log</span>
+          </div>
+          <div id="log-lines" class="log-lines"></div>
+        </div>
+        <div id="map-tools" class="overlay map-tools">
+          <button id="btn-fit" class="map-tool" type="button" title="Fit view - zoom the map so the whole field fills the window">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H4v5"/><path d="M15 4h5v5"/><path d="M15 20h5v-5"/><path d="M9 20H4v-5"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <section id="i2c" class="i2c collapsed">
+        <div class="i2c-head">
+          <button id="i2c-toggle" class="ghost small">^ Open</button>
+          <span class="i2c-title">I2C monitor</span>
+          <span id="i2c-count" class="i2c-count">0 frames</span>
+          <span class="i2c-spacer"></span>
+          <button id="i2c-pause" class="ghost small">|| Pause view</button>
+          <button id="i2c-clear" class="ghost small">Clear</button>
+          <button id="i2c-save" class="ghost small">Save log</button>
+        </div>
+        <div id="i2c-body" class="i2c-body"></div>
+      </section>
+    </section>
+
+    <aside id="settings-dock" class="settings-dock" aria-label="Settings">
+      <nav class="settings-rail" role="tablist" aria-label="Settings sections" aria-orientation="vertical">
+        <button id="settings-tab-robot" class="settings-tab" type="button" role="tab" data-settings="robot" aria-controls="settings-robot" aria-selected="false" aria-expanded="false" tabindex="0" title="Robot configuration">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="6" width="14" height="13" rx="2"/><path d="M9 10h.01M15 10h.01M9 15h6M12 3v3M3 10v5M21 10v5"/></svg><span>Robot</span>
+        </button>
+        <button id="settings-tab-ui" class="settings-tab" type="button" role="tab" data-settings="ui" aria-controls="settings-ui" aria-selected="false" aria-expanded="false" tabindex="-1" title="Map and display preferences">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 6 6-3 6 3 6-3v15l-6 3-6-3-6 3zM9 3v15M15 6v15"/></svg><span>UI</span>
+        </button>
+        <button id="settings-tab-calibration" class="settings-tab" type="button" role="tab" data-settings="calibration" aria-controls="settings-calibration" aria-selected="false" aria-expanded="false" tabindex="-1" title="Calibration procedures">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h16M6 16l4-4 3 2 5-7"/><path d="M15 7h3v3M5 4v5M9 4v2M13 4v5M17 4v2"/></svg><span>Calibrate</span>
+        </button>
+        <button id="settings-tab-tests" class="settings-tab" type="button" role="tab" data-settings="tests" aria-controls="settings-tests" aria-selected="false" aria-expanded="false" tabindex="-1" title="Bench tests and diagnostics">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 1.8 3h10.4A2 2 0 0 0 19 18l-5-9V3M8 15h8"/><path d="m10 17 1.4 1.4L14.5 15"/></svg><span>Tests</span>
+        </button>
+      </nav>
+      <section id="settings-drawer" class="settings-drawer" aria-hidden="true" inert>
+        <div class="settings-drawer-head">
+          <h2 id="settings-title">Robot</h2>
+          <button id="settings-close" class="icon-btn" type="button" title="Collapse settings" aria-label="Collapse settings">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 5-7 7 7 7"/></svg>
+          </button>
+        </div>
+        <div class="settings-pages">
+      <div class="settings-page hidden" id="settings-robot" role="tabpanel" aria-labelledby="settings-tab-robot" hidden>
+      <section class="card">
+        <h3>Robot <small>- body, clearance &amp; photo</small></h3>
+        <div class="m-group">
+          <div class="m-label">Body <span class="sub">(position = centre)</span></div>
+          <div class="grid2">
+            <label class="field-col">Width <span class="field"><input id="robot-w" type="number" value="300" min="50" step="10"/><span class="unit">mm</span></span></label>
+            <label class="field-col">Height <span class="field"><input id="robot-h" type="number" value="300" min="50" step="10"/><span class="unit">mm</span></span></label>
+          </div>
+        </div>
+        <div class="m-group">
+          <div class="m-label">Obstacle clearance</div>
+          <label class="field-col">Safety margin kept around the body
+            <span class="field"><input id="robot-margin" type="number" value="150" min="0" step="10"/><span class="unit">mm</span></span>
+          </label>
+          <label class="field-col">Waypoint clearance (extra)
+            <span class="field"><input id="robot-wp-margin" type="number" value="0" min="0" step="10"/><span class="unit">mm</span></span>
+          </label>
+          <span class="photo-hint">0 = half the robot height; larger keeps waypoints farther from obstacles and the field border. Close waypoints are approached straight, with the arrival angle performed before the final leg.</span>
+        </div>
+        <div class="m-group">
+          <div class="m-label">Robot photo</div>
+          <div class="photo-row">
+            <img id="robot-photo-preview" class="photo-preview" alt="robot photo preview" hidden/>
+            <div class="photo-ctl">
+              <label class="file-row">Photo <input id="robot-photo" type="file" accept="image/*"/></label>
+              <span class="photo-hint">drawn inside the robot square (this browser only)</span>
+            </div>
+            <button id="btn-robot-photo-clear" class="ghost m-btn" title="Remove the robot photo">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+              <span>Clear</span>
+            </button>
+          </div>
+        </div>
+        <p class="callout" id="robot-info"></p>
+      </section>
+
+      <section class="card">
+        <h3>Opponents <small id="robots-status">- console camera role</small></h3>
+        <p class="callout" id="robots-info"></p>
+        <div class="m-group">
+          <div class="m-label">Count &amp; positions</div>
+          <div class="row">
+            <label class="field-col">Robots reported
+              <span class="field"><input id="robots-count" type="number" min="0" max="4" step="1" value="1"/><span class="unit">0-4</span></span>
+            </label>
+            <button id="btn-robots-reset" class="ghost m-btn" title="Reset to the default: 1 robot at (2700, 1790) mm">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3"/><path d="M4.5 5v4h4"/></svg>
+              <span>Reset</span>
+            </button>
+          </div>
+          <div id="robots-list" class="robots-list"></div>
+        </div>
+        <div class="m-group">
+          <div class="m-label">Opponent photo</div>
+          <div class="photo-row">
+            <img id="opponent-photo-preview" class="photo-preview" alt="opponent photo preview" hidden/>
+            <div class="photo-ctl">
+              <label class="file-row">Photo <input id="opponent-photo" type="file" accept="image/*"/></label>
+              <span class="photo-hint">fills the R1... squares (this browser only)</span>
+            </div>
+            <button id="btn-opponent-photo-clear" class="ghost m-btn" title="Remove the opponent photo">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+              <span>Clear</span>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h3>Path options <small>- planner &amp; fitting</small></h3>
+        <div class="m-group">
+          <div class="m-label">Motion</div>
+          <label class="opt-row">
+            <span class="opt-head"><span>Speed</span><output id="opt-speed-out">500</output><span class="unit">mm/s</span></span>
+            <input id="opt-speed" type="range" min="100" max="900" value="500"/>
+          </label>
+        </div>
+        <div class="m-group">
+          <div class="m-label">Geometry fitting</div>
+          <label class="opt-row">
+            <span class="opt-head"><span>Node step <small>straights</small></span><output id="opt-step-out">250</output><span class="unit">mm</span></span>
+            <input id="opt-step" type="range" min="100" max="500" step="10" value="250"/>
+          </label>
+          <label class="opt-row">
+            <span class="opt-head"><span>Corner radius</span><output id="opt-corner-out">200</output><span class="unit">mm</span></span>
+            <input id="opt-corner" type="range" min="0" max="500" step="10" value="200"/>
+          </label>
+          <label class="opt-row">
+            <span class="opt-head"><span>Arc chord tol</span><output id="opt-chord-out">6</output><span class="unit">mm</span></span>
+            <input id="opt-chord" type="range" min="2" max="15" step="1" value="6"/>
+          </label>
+          <label class="opt-row">
+            <span class="opt-head"><span>Fit tolerance</span><output id="opt-fit-out">8</output><span class="unit">mm</span></span>
+            <input id="opt-fit" type="range" min="2" max="30" step="1" value="8"/>
+          </label>
+        </div>
+        <div class="m-group">
+          <div class="m-label">Behaviour</div>
+          <div class="check-grid">
+            <label class="check"><input id="opt-fit-enabled" type="checkbox" checked/> Fit lines &amp; arcs</label>
+            <label class="check"><input id="opt-avoid" type="checkbox" checked/> Avoid obstacles (Theta*)</label>
+            <label class="check"><input id="opt-smooth" type="checkbox" checked/> Round corners (fillet)</label>
+          </div>
+        </div>
+        <details class="hint-fold">
+          <summary>Details</summary>
+          <p class="hint"><b>Speed</b> is the cruise speed of every planned move (the board ramps to it). <b>Node step</b> is the spacing of the waypoints on straight legs; <b>Corner radius</b> rounds every corner with a fillet of that radius (0 = sharp). <b>Arc chord tol</b> limits how far a curve may deviate from its true arc; <b>Fit tolerance</b> is how closely the fitted lines/arcs must follow your stroke. The switches: <b>Fit lines &amp; arcs</b> (turn the stroke fitting off to keep the raw points), <b>Avoid obstacles</b> (route around Box/Zone and the opponents with Theta*), <b>Round corners</b> (apply the fillet smoothing).</p>
+        </details>
+      </section>
+
+      <section class="card">
+        <h3>STM32 motion settings <small id="calib-status">- reading the board</small></h3>
+        <p class="hint">Wheel, encoder, speed, and motion parameters stored on the STM32. Each
+          group has its own Apply, Save to flash, and Restore actions. Apply is refused while the
+          robot moves.</p>
+        <div id="calib-form"></div>
+        <div class="row calib-board-actions">
+          <button id="btn-calib-load" class="icon-btn restore" type="button"
+                  title="Reload every setting from the STM flash, replacing the board RAM image (discards applied but unsaved edits)">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M13.2 8A5.2 5.2 0 1 1 8 2.8c1.7 0 3.2.8 4.1 2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M12.8 1.4v4.2H8.6z" fill="currentColor"/></svg>
+            <span>Reload from flash</span>
+          </button>
+          <button id="btn-calib-defaults" class="icon-btn defaults" type="button"
+                  title="Restore the STM32 compile-time defaults in RAM (press Save to flash to persist)">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M7.6 3.2v9.6L2.4 8z" fill="currentColor"/><path d="M13.6 3.2v9.6L8.4 8z" fill="currentColor"/></svg>
+            <span>Defaults</span>
+          </button>
+        </div>
+        <p class="hint" id="calib-note"></p>
+      </section>
+      </div><!-- /settings-robot -->
+
+      <div class="settings-page hidden" id="settings-ui" role="tabpanel" aria-labelledby="settings-tab-ui" hidden>
+      <section class="card">
+        <h3>Display <small>- map colours</small></h3>
+        <div class="m-group">
+          <div class="m-label">Layers</div>
+          <label class="color-row">Drawn path <input id="color-stroke" type="color" value="#ffd166"/></label>
+          <label class="color-row">Planned path <input id="color-path" type="color" value="#38d3ff"/></label>
+          <label class="color-row">Reference <input id="color-ref" type="color" value="#9aa7b5"/></label>
+          <label class="color-row">Robot <input id="color-robot" type="color" value="#4da3ff"/></label>
+          <label class="color-row">Turns &amp; pauses <input id="color-actions" type="color" value="#f5a623"/></label>
+        </div>
+        <div class="row">
+          <button id="btn-colors-reset" class="ghost m-btn" title="Restore the default palette">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3"/><path d="M4.5 5v4h4"/></svg>
+            <span>Reset colours</span>
+          </button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h3>Field <small>- table size</small></h3>
+        <div class="m-group">
+          <div class="m-label">Size</div>
+          <div class="grid2">
+            <label class="field-col">Width <span class="field"><input id="field-w" type="number" value="3000" min="500" step="100"/><span class="unit">mm</span></span></label>
+            <label class="field-col">Height <span class="field"><input id="field-h" type="number" value="2000" min="500" step="100"/><span class="unit">mm</span></span></label>
+          </div>
+          <button id="btn-field" class="primary m-btn wide" title="Apply the field size and re-fit the view">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>
+            <span>Apply</span>
+          </button>
+        </div>
+        <div class="m-group">
+          <div class="m-label">View</div>
+          <button id="btn-view" class="ghost m-btn wide" title="Zoom the map so the whole field fits the window">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H4v5"/><path d="M15 4h5v5"/><path d="M15 20h5v-5"/><path d="M9 20H4v-5"/></svg>
+            <span>Fit view</span>
+          </button>
+        </div>
+      </section>
+      </div><!-- /settings-ui -->
+
+      <div class="settings-page hidden" id="settings-calibration" role="tabpanel" aria-labelledby="settings-tab-calibration" hidden>
+      <section class="card calib-test">
+        <h3>Drive calibration <small>- distance accuracy</small></h3>
+        <p class="hint">Drive a straight line, measure the real distance with a tape, then
+          correct the wheel size (open-loop drive) and/or the odometry wheel (reported pose).</p>
+        <div class="calib-grid">
+          <label>Command <span class="field"><input id="calib-drive-dist" type="number" value="1000" step="100" min="100"/><span class="unit">mm</span></span></label>
+          <label>Speed <span class="field"><input id="calib-drive-speed" type="number" value="150" step="10" min="100" max="900"/><span class="unit">mm/s</span></span></label>
+          <button id="btn-calib-drive" class="ghost wide" type="button"
+                  title="Drive the commanded distance at the chosen speed and wait for the board to stop">Drive test</button>
+          <label class="wide">Measured <span class="field"><input id="calib-drive-actual" type="number" value="1000" step="1" min="1"/><span class="unit">mm</span></span></label>
+          <button id="btn-calib-fix-wheel" class="ghost" type="button"
+                  title="Stepper wheel diameter := old x measured / commanded (open-loop distance)">Fix wheel size</button>
+          <button id="btn-calib-fix-odom-circ" class="ghost" type="button"
+                  title="Odometry wheel circumference := old x measured / board-reported distance">Fix odom wheel</button>
+        </div>
+        <p class="hint" id="calib-drive-info">board odometry: no drive test yet</p>
+      </section>
+
+      <section class="card calib-test">
+        <h3>Turn calibration <small>- rotation accuracy</small></h3>
+        <p class="hint">Turn in place (one TURN command carries at most 180 deg), measure the
+          real angle, then correct the drive track (open-loop turn) and/or the odometry track
+          (reported heading).</p>
+        <div class="calib-grid">
+          <label>Command <span class="field"><input id="calib-turn-angle" type="number" value="90" step="5" min="10" max="180"/><span class="unit">deg</span></span></label>
+          <label>Speed <span class="field"><input id="calib-turn-speed" type="number" value="120" step="10" min="100" max="900"/><span class="unit">mm/s</span></span></label>
+          <button id="btn-calib-turn" class="ghost wide" type="button"
+                  title="Turn the commanded angle at the chosen speed and wait for the board to stop">Turn test</button>
+          <label class="wide">Measured <span class="field"><input id="calib-turn-actual" type="number" value="90" step="1" min="1"/><span class="unit">deg</span></span></label>
+          <button id="btn-calib-fix-track" class="ghost" type="button"
+                  title="Drive wheel track := old x commanded / measured (open-loop rotation)">Fix drive track</button>
+          <button id="btn-calib-fix-odom-track" class="ghost" type="button"
+                  title="Odometry wheel track := old x board-reported / measured heading">Fix odom track</button>
+        </div>
+        <p class="hint" id="calib-turn-info">board odometry: no turn test yet</p>
+      </section>
+
+      <section class="card calib-test">
+        <h3>IMU / gyro <small id="imu-status">- checking</small></h3>
+        <p class="hint">The MPU6050 sits on the robot's own I2C bus (I2C6); firmware 3.3 streams
+          its yaw rate to the board while the robot moves. Values here apply <b>live</b> (no
+          restart), but only <b>docker/.env</b> keeps them across restarts - the note under the
+          buttons shows the exact line to add. Robot still for bias and noise tests.</p>
+        <div class="calib-readout">
+          <div><span>loc mode</span><b id="imu-mode">-</b></div>
+          <div><span>imu state</span><b id="imu-state">-</b></div>
+          <div><span>yaw axis</span><b id="imu-axis">-</b></div>
+          <div><span>bias</span><b id="imu-bias">-</b></div>
+          <div><span>integrated</span><b id="imu-integral">-</b></div>
+          <div><span>stream</span><b id="imu-stream">-</b></div>
+          <div><span>board sees</span><b id="imu-board">-</b></div>
+          <div><span>gyro scale</span><b id="imu-scale">-</b></div>
+        </div>
+        <div class="calib-grid">
+          <label>Turns done <span class="field"><input id="imu-turns" type="number" value="1" step="0.25" min="0.25" max="50"/><span class="unit">turns</span></span></label>
+          <button id="btn-imu-reset" class="ghost" type="button"
+                  title="Spin test step 1 - zero the yaw integral, then rotate the robot by hand">Reset counter</button>
+          <button id="btn-imu-apply" class="ghost wide" type="button"
+                  title="Spin test step 3 - new scale = current x (360 x turns / integrated): corrects the MPU6050 trim from the hand rotation">Compute &amp; apply scale</button>
+          <button id="btn-imu-bias" class="ghost" type="button"
+                  title="Re-average the gyro bias while the robot stands still (~0.2 s)">Recalibrate bias</button>
+          <button id="btn-imu-noise" class="ghost" type="button"
+                  title="Sample the yaw rate at rest for 2 s and suggest GYRO_SIGMA_DEG_S for the fusion">Measure noise</button>
+          <button id="btn-imu-toggle" class="ghost wide" type="button"
+                  title="Stop or restart the IMU sampler">Stop IMU (bench test)</button>
+        </div>
+        <p class="hint">Spin test: <b>1</b> Reset counter, <b>2</b> turn the robot N complete
+          turns by hand, <b>3</b> type N and Compute &amp; apply scale - the note below shows the
+          exact <b>GYRO_SCALE=...</b> line for docker/.env.</p>
+        <p class="hint" id="imu-note"></p>
+      </section>
+
+      </div><!-- /settings-calibration -->
+
+      <div class="settings-page hidden" id="settings-tests" role="tabpanel" aria-labelledby="settings-tab-tests" hidden>
+      <section class="card calib-test">
+        <h3>Bench tests <small id="selftest-status">- idle</small></h3>
+        <p class="hint">One-click bench and match-prep tests (STM32 bring-up checklist). Motion tests
+          need floor clearance and a hand near E-STOP; each test lists its steps and shows PASS or
+          FAIL with the numbers and the limits. All of them also run in MOCK (simulated) for
+          rehearsals.</p>
+
+        <h4 class="selftest-title">Pre-match readiness</h4>
+        <p class="hint">Steps: <b>1</b> place the robot at its match start and press Set Pose,
+          <b>2</b> press Check. Verifies: REAL link and firmware, latched faults, the recent board
+          log, saved settings, the IMU (bias settled, stream active) and the robot standing at its
+          start rectangle. Warnings do not fail; any FAIL means: do not start a match yet.</p>
+        <div class="calib-grid">
+          <button id="btn-test-readiness" class="ghost wide" type="button">Check readiness</button>
+        </div>
+        <div id="test-readiness-result" class="selftest-result"></div>
+
+        <h4 class="selftest-title">Square test (GOTO)</h4>
+        <p class="hint">Steps: <b>1</b> clear a square of floor around the robot (side + robot +
+          margin), <b>2</b> keep a hand near E-STOP, <b>3</b> press Run. Four absolute GOTOs drive
+          the bench square; PASS = the robot returns within 20 mm / 2 deg of its start
+          (odometry-based - confirm with a tape when calibrating).</p>
+        <div class="calib-grid">
+          <label>Side <span class="field"><input id="test-square-side" type="number" value="500" step="50" min="100" max="1200"/><span class="unit">mm</span></span></label>
+          <label>Speed <span class="field"><input id="test-square-speed" type="number" value="150" step="10" min="50" max="800"/><span class="unit">mm/s</span></span></label>
+          <button id="btn-test-square" class="ghost wide" type="button">Run square test</button>
+        </div>
+        <div id="test-square-result" class="selftest-result"></div>
+
+        <h4 class="selftest-title">Arc test</h4>
+        <p class="hint">Steps: <b>1</b> clear a half-circle lane of floor (radius + robot + margin),
+          <b>2</b> press Run. A left quarter arc then a right one; PASS = both end within 20 mm /
+          2 deg of the exact circle geometry (each arc is judged from its own start).</p>
+        <div class="calib-grid">
+          <label>Radius <span class="field"><input id="test-arc-radius" type="number" value="300" step="50" min="100" max="600"/><span class="unit">mm</span></span></label>
+          <label>Speed <span class="field"><input id="test-arc-speed" type="number" value="150" step="10" min="50" max="800"/><span class="unit">mm/s</span></span></label>
+          <button id="btn-test-arc" class="ghost wide" type="button">Run arc test</button>
+        </div>
+        <div id="test-arc-result" class="selftest-result"></div>
+
+        <h4 class="selftest-title">Chain audit (QUEUE_ARC)</h4>
+        <p class="hint">Steps: <b>1</b> clear about 1.5 m of floor ahead of the robot, <b>2</b> press
+          Run. The robot drives flat-arc -&gt; quarter-arc -&gt; flat-arc as ONE blended chain; PASS =
+          zero mid-run stops (one acceleration, one deceleration). The closing error is reported for
+          information; the usual "run finished: N segment(s), M blended" line lands in the log.</p>
+        <div class="calib-grid">
+          <label>Leg <span class="field"><input id="test-chain-length" type="number" value="300" step="50" min="100" max="800"/><span class="unit">mm</span></span></label>
+          <label>Radius <span class="field"><input id="test-chain-radius" type="number" value="300" step="50" min="150" max="600"/><span class="unit">mm</span></span></label>
+          <label>Speed <span class="field"><input id="test-chain-speed" type="number" value="150" step="10" min="50" max="800"/><span class="unit">mm/s</span></span></label>
+          <button id="btn-test-chain" class="ghost wide" type="button">Run chain audit</button>
+        </div>
+        <div id="test-chain-result" class="selftest-result"></div>
+
+        <h4 class="selftest-title">Rest-drift audit</h4>
+        <p class="hint">Steps: <b>1</b> robot standing still with its wheels on the floor, nobody
+          touching the table, <b>2</b> press Run and wait. Reports board and fused pose drift, encoder
+          tick noise and gyro noise; PASS = board drift within 2 mm / 0.5 deg and no motion seen.</p>
+        <div class="calib-grid">
+          <label>Duration <span class="field"><input id="test-drift-seconds" type="number" value="30" step="5" min="3" max="120"/><span class="unit">s</span></span></label>
+          <button id="btn-test-drift" class="ghost wide" type="button">Run rest-drift audit</button>
+        </div>
+        <div id="test-drift-result" class="selftest-result"></div>
+
+        <h4 class="selftest-title">Turn repeatability audit</h4>
+        <p class="hint">Steps: <b>1</b> robot standing with wheels on the floor, hands off, <b>2</b>
+          press Run. Turns N times CCW then N times CW by the given angle; PASS = |mean| &lt;= 3 deg
+          and sigma &lt;= 1.5 deg per direction for the fused heading. The scrub column shows how far
+          the wheel-driven board heading diverges from the gyro-aided fused heading during turns.</p>
+        <div class="calib-grid">
+          <label>Turns/dir <span class="field"><input id="test-turn-count" type="number" value="2" step="1" min="1" max="5"/></span></label>
+          <label>Angle <span class="field"><input id="test-turn-angle" type="number" value="90" step="15" min="15" max="180"/><span class="unit">deg</span></span></label>
+          <label>Speed <span class="field"><input id="test-turn-speed" type="number" value="120" step="10" min="50" max="400"/><span class="unit">mm/s</span></span></label>
+          <button id="btn-test-turn" class="ghost wide" type="button">Run turn audit</button>
+        </div>
+        <div id="test-turn-result" class="selftest-result"></div>
+
+        <h4 class="selftest-title">Loop-drift audit</h4>
+        <p class="hint">Steps: <b>1</b> clear floor for a square of the given side, <b>2</b> press
+          Run. Drives the closed square loop repeatedly WITHOUT corrections and compares each source
+          against the expected end pose: board drift = control + slip error, fused drift = what the
+          estimator believes. PASS = last-loop fused drift within 60 mm / 4 deg.</p>
+        <div class="calib-grid">
+          <label>Loops <span class="field"><input id="test-loop-count" type="number" value="2" step="1" min="1" max="4"/></span></label>
+          <label>Side <span class="field"><input id="test-loop-side" type="number" value="500" step="50" min="200" max="1200"/><span class="unit">mm</span></span></label>
+          <label>Speed <span class="field"><input id="test-loop-speed" type="number" value="150" step="10" min="50" max="400"/><span class="unit">mm/s</span></span></label>
+          <button id="btn-test-loop" class="ghost wide" type="button">Run loop audit</button>
+        </div>
+        <div id="test-loop-result" class="selftest-result"></div>
+
+        <h4 class="selftest-title">Speed &amp; ramp audit</h4>
+        <p class="hint">Steps: <b>1</b> clear a straight lane of the given length, <b>2</b> press Run.
+          Drives one straight at cruise while sampling the board's measured wheel speeds: reports the
+          real peak and cruise speed, the time to 95 % of the command and the driven distance. PASS =
+          peak within +/-15 % of the command and distance within 60 mm.</p>
+        <div class="calib-grid">
+          <label>Distance <span class="field"><input id="test-ramp-distance" type="number" value="1200" step="100" min="300" max="2500"/><span class="unit">mm</span></span></label>
+          <label>Speed <span class="field"><input id="test-ramp-speed" type="number" value="400" step="50" min="100" max="800"/><span class="unit">mm/s</span></span></label>
+          <button id="btn-test-ramp" class="ghost wide" type="button">Run speed audit</button>
+        </div>
+        <div id="test-ramp-result" class="selftest-result"></div>
+
+        <h4 class="selftest-title">Encoder check</h4>
+        <p class="hint">Steps: <b>1</b> clear the driving distance plus margin forward AND backward,
+          <b>2</b> press Run. Drives +d, -d then turns +90 deg, reading the raw tick counters after
+          every move: checks the tick scale against the board's odom calibration, the backward
+          direction and the turn polarity (left negative / right positive, matching magnitudes).</p>
+        <div class="calib-grid">
+          <label>Distance <span class="field"><input id="test-enc-distance" type="number" value="300" step="50" min="100" max="800"/><span class="unit">mm</span></span></label>
+          <label>Speed <span class="field"><input id="test-enc-speed" type="number" value="150" step="10" min="50" max="400"/><span class="unit">mm/s</span></span></label>
+          <button id="btn-test-enc" class="ghost wide" type="button">Run encoder check</button>
+        </div>
+        <div id="test-enc-result" class="selftest-result"></div>
+
+        <h4 class="selftest-title">Fault drills (safety rehearsal)</h4>
+        <p class="hint"><b>E-stop drill</b> (no motion): latches the board e-stop, verifies the
+          latch, clears it and verifies recovery. <b>Deadman drill</b> MOVES the robot: a slow creep
+          of the given distance while telemetry AND the gyro stream go silent (any frame would feed
+          the watchdog) - the board must stop ITSELF at the 1.5 s watchdog and latch DEADMAN. Run
+          the deadman drill only with clear floor and a hand near E-STOP; the drill clears the fault
+          before returning.</p>
+        <div class="calib-grid">
+          <label>Creep <span class="field"><input id="test-drill-distance" type="number" value="250" step="50" min="100" max="400"/><span class="unit">mm</span></span></label>
+          <label>Speed <span class="field"><input id="test-drill-speed" type="number" value="120" step="10" min="60" max="200"/><span class="unit">mm/s</span></span></label>
+          <button id="btn-test-drill-estop" class="ghost" type="button">E-stop drill</button>
+          <button id="btn-test-drill-deadman" class="ghost" type="button">Deadman drill (moves)</button>
+        </div>
+        <div id="test-drill-result" class="selftest-result"></div>
+
+        <p class="hint" id="selftest-note"></p>
+      </section>
+
+      <section class="card">
+        <h3>Board diagnostics <small id="board-status">- firmware status</small></h3>
+        <p class="hint">Every failure the STM32 records (faults, rejected frames, flash and
+          configuration events, boot cause) with its code and context byte.</p>
+        <div id="board-errors"></div>
+        <div class="row">
+          <button id="btn-errors-refresh" class="ghost" type="button"
+                  title="Read the board error/event log again (QUERY_EVENTS)">Refresh</button>
+        </div>
+      </section>
+      </div><!-- /settings-tests -->
+        </div><!-- /settings-pages -->
+      </section><!-- /settings-drawer -->
+    </aside>
+  </main>
+
+  <script src="js/app.js?v=63"></script>
+</body>
+</html>

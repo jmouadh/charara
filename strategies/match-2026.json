@@ -1,0 +1,91 @@
+{
+  "name": "match-2026",
+  "version": 2,
+  "updated_at": 0,
+  "field": {
+    "width_mm": 3000.0,
+    "height_mm": 2000.0
+  },
+  "goal": null,
+  "obstacles": [],
+  "team": "yellow",
+  "options": {
+    "match_s": 100,
+    "score": 0
+  },
+  "elements": [],
+  "kind": "bt",
+  "tree": {
+    "type": "sequence",
+    "children": [
+      {
+        "type": "action",
+        "name": "log",
+        "message": "match start: main task first"
+      },
+      {
+        "type": "selector",
+        "children": [
+          {
+            "type": "retry",
+            "attempts": 2,
+            "child": {
+              "type": "action",
+              "name": "run_document",
+              "doc": "collect-main"
+            }
+          },
+          {
+            "type": "sequence",
+            "children": [
+              {
+                "type": "condition",
+                "name": "time_left",
+                "seconds": 40
+              },
+              {
+                "type": "action",
+                "name": "log",
+                "message": "main task failed - running the backup task"
+              },
+              {
+                "type": "action",
+                "name": "run_document",
+                "doc": "collect-backup"
+              }
+            ]
+          },
+          {
+            "type": "action",
+            "name": "log",
+            "message": "no time left for the backup task"
+          }
+        ]
+      },
+      {
+        "type": "force_success",
+        "child": {
+          "type": "sequence",
+          "children": [
+            {
+              "type": "condition",
+              "name": "time_left",
+              "seconds": 10
+            },
+            {
+              "type": "action",
+              "name": "run_document",
+              "doc": "park"
+            }
+          ]
+        }
+      },
+      {
+        "type": "action",
+        "name": "log",
+        "message": "match end"
+      }
+    ]
+  },
+  "notes": "Track C reference match tree: main task with one retry, a time-guarded backup task, then a time-guarded park that cannot fail the match. The documents it composes are PLACEHOLDERS - replace collect-main / collect-backup / park with the real drawings (or point run_document at your own). Authored for the Yellow start (315, 1800) mm, -90 deg. Tasks are bounded by time_left guards on purpose: cancelling a running mission tick (the 'timeout' decorator over run_document) is not safe yet - see the Docs/10 backlog."
+}

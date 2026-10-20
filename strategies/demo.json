@@ -1,0 +1,29 @@
+{
+  "name": "demo",
+  "version": 1,
+  "updated_at": 0,
+  "field": {
+    "width_mm": 3000.0,
+    "height_mm": 2000.0
+  },
+  "goal": null,
+  "obstacles": [],
+  "options": {
+    "speed_mm_s": 250
+  },
+  "elements": [
+    {
+      "kind": "stroke",
+      "points": [[400, 300], [1100, 300]]
+    },
+    {
+      "kind": "pause",
+      "seconds": 0.5
+    },
+    {
+      "kind": "stroke",
+      "points": [[1100, 300], [1100, 800]]
+    }
+  ],
+  "notes": "Sample strategy: small L-shaped drive near the start corner."
+}

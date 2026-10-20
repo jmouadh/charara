@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 3000 2000" width="3000" height="2000">
+  <!-- Built-in schematic of the Eurobot play area (fallback background).
+       Replace with table_FINALE_1.0.pdf or table.png for the real artwork. -->
+  <rect x="0" y="0" width="3000" height="2000" fill="#f3efe6"/>
+  <rect x="0" y="0" width="3000" height="2000" fill="none" stroke="#b9b2a2" stroke-width="16"/>
+  <rect x="24" y="24" width="2952" height="1952" fill="none" stroke="#d8d2c4" stroke-width="4"/>
+
+  <!-- grid every 250 mm -->
+  <g stroke="#e4dfd3" stroke-width="3">
+    <path d="M250 0V2000 M500 0V2000 M750 0V2000 M1000 0V2000 M1250 0V2000 M1500 0V2000 M1750 0V2000 M2000 0V2000 M2250 0V2000 M2500 0V2000 M2750 0V2000"/>
+    <path d="M0 250H3000 M0 500H3000 M0 750H3000 M0 1000H3000 M0 1250H3000 M0 1500H3000 M0 1750H3000"/>
+  </g>
+
+  <!-- start zones (both sides, 500 mm deep) -->
+  <rect x="32" y="700" width="436" height="600" fill="#e7f2e2" stroke="#9fbf90" stroke-width="4" rx="14"/>
+  <rect x="2532" y="700" width="436" height="600" fill="#f2e7e2" stroke="#bf9f90" stroke-width="4" rx="14"/>
+  <text x="250" y="1020" text-anchor="middle" font-family="sans-serif" font-size="70" fill="#7d9a70">START</text>
+  <text x="2750" y="1020" text-anchor="middle" font-family="sans-serif" font-size="70" fill="#9a7d70">START</text>
+
+  <!-- centre circle -->
+  <circle cx="1500" cy="1000" r="350" fill="none" stroke="#cfc8b8" stroke-width="4"/>
+  <circle cx="1500" cy="1000" r="6" fill="#b9b2a2"/>
+
+  <!-- corner markers (golden drop zones) -->
+  <g fill="#f0d9a8" stroke="#c9a95f" stroke-width="3">
+    <rect x="80" y="120" width="120" height="120" rx="10"/>
+    <rect x="2800" y="120" width="120" height="120" rx="10"/>
+    <rect x="80" y="1760" width="120" height="120" rx="10"/>
+    <rect x="2800" y="1760" width="120" height="120" rx="10"/>
+  </g>
+
+  <text x="1500" y="1960" text-anchor="middle" font-family="sans-serif" font-size="54" fill="#a49c8b">
+    Charara field — drop table_FINALE_1.0.pdf in ui/static/field/ for the official drawing
+  </text>
+</svg>

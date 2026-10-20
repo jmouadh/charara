@@ -1,0 +1,23 @@
+{
+  "name": "park",
+  "version": 1,
+  "updated_at": 0,
+  "field": {
+    "width_mm": 3000.0,
+    "height_mm": 2000.0
+  },
+  "goal": null,
+  "obstacles": [],
+  "team": "yellow",
+  "start_pose": [315.0, 1800.0, -90.0],
+  "options": {
+    "speed_mm_s": 250
+  },
+  "elements": [
+    {
+      "kind": "stroke",
+      "points": [[350, 1750], [250, 1850]]
+    }
+  ],
+  "notes": "PLACEHOLDER endgame park for the match-2026 tree (Track C): a short move back to the start corner, run when at least 10 s remain and never able to fail the match. Replace with the real park position."
+}

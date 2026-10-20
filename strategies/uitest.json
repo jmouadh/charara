@@ -1,0 +1,45 @@
+{
+  "name": "uitest",
+  "version": 1,
+  "updated_at": 1790851612.249652,
+  "field": {
+    "width_mm": 3000.0,
+    "height_mm": 2000.0
+  },
+  "goal": null,
+  "obstacles": [],
+  "options": {
+    "speed_mm_s": 200,
+    "goto_step_mm": 250,
+    "corner_radius_mm": 200,
+    "node_chord_tol_mm": 6,
+    "fit_tol_mm": 8,
+    "robot_width_mm": 300,
+    "robot_height_mm": 300,
+    "obstacle_margin_mm": 150,
+    "fit_enabled": true,
+    "avoid_obstacles": true,
+    "smooth": true
+  },
+  "elements": [
+    {
+      "kind": "stroke",
+      "points": [
+        [
+          315,
+          1800
+        ],
+        [
+          700,
+          1800
+        ]
+      ]
+    },
+    {
+      "kind": "rotate",
+      "angle_deg": 45
+    }
+  ],
+  "team": "yellow",
+  "notes": ""
+}

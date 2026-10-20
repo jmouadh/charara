@@ -1,0 +1,23 @@
+{
+  "name": "collect-backup",
+  "version": 1,
+  "updated_at": 0,
+  "field": {
+    "width_mm": 3000.0,
+    "height_mm": 2000.0
+  },
+  "goal": null,
+  "obstacles": [],
+  "team": "yellow",
+  "start_pose": [315.0, 1800.0, -90.0],
+  "options": {
+    "speed_mm_s": 250
+  },
+  "elements": [
+    {
+      "kind": "stroke",
+      "points": [[600, 1600], [950, 1600]]
+    }
+  ],
+  "notes": "PLACEHOLDER backup task for the match-2026 tree (Track C): one short stroke that fits with ~40 s left on the clock. Replace with the real fallback drawing."
+}
