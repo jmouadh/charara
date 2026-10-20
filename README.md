@@ -1,4 +1,4 @@
-# Charara - robot software (console, planner, brain)
+# Charara - autonomous Eurobot 2026 robot
 
 [![ci](https://github.com/jmouadh/charara/actions/workflows/ci.yml/badge.svg)](https://github.com/jmouadh/charara/actions/workflows/ci.yml)
 [![docs](https://github.com/jmouadh/charara/actions/workflows/pages.yml/badge.svg)](https://jmouadh.github.io/charara/)
