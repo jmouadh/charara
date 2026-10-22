@@ -32,15 +32,22 @@ half-diagonal - is configured in the console, see
 ## Real photos
 
 <p align="center">
-  <a href="../Docs/assets/hardware/chassis-top.jpg"><img width="32%" alt="Bare chassis from above: four mecanum wheels, steppers and the controller board" src="../Docs/assets/hardware/chassis-top.jpg"></a>
-  <a href="../Docs/assets/hardware/drivetrain.jpg"><img width="32%" alt="Drivetrain with the motors wired, seen from above" src="../Docs/assets/hardware/drivetrain.jpg"></a>
-  <a href="../Docs/assets/hardware/robot.jpg"><img width="32%" alt="The assembled robot on the floor" src="../Docs/assets/hardware/robot.jpg"></a>
+  <a href="../Docs/assets/hardware/chassis-top.jpg"><img height="230" alt="Bare chassis from above: four mecanum wheels, steppers and the controller board" src="../Docs/assets/hardware/chassis-top.jpg"></a>
+  <a href="../Docs/assets/hardware/drivetrain.jpg"><img height="230" alt="Drivetrain with the motors wired, seen from above" src="../Docs/assets/hardware/drivetrain.jpg"></a>
+  <a href="../Docs/assets/hardware/robot.jpg"><img height="230" alt="The assembled robot on the floor" src="../Docs/assets/hardware/robot.jpg"></a>
 </p>
 <p align="center"><sub><b>Bare chassis</b> &nbsp;·&nbsp; <b>drivetrain, wired</b> &nbsp;·&nbsp; <b>assembled robot</b></sub></p>
 
 <p align="center">
-  <a href="../Docs/assets/hardware/bearing-mount.jpg"><img width="32%" alt="Wheel hub: printed mount, bearing and coupling" src="../Docs/assets/hardware/bearing-mount.jpg"></a>
-  <a href="../Docs/assets/hardware/stepper-coupling.jpg"><img width="32%" alt="Stepper with the spring coupling on the controller board" src="../Docs/assets/hardware/stepper-coupling.jpg"></a>
-  <a href="../Docs/assets/hardware/vision-setup.jpg"><img width="32%" alt="Robot and camera on the field, with vision tags" src="../Docs/assets/hardware/vision-setup.jpg"></a>
+  <a href="../Docs/assets/hardware/bearing-mount.jpg"><img height="200" alt="Wheel hub: printed mount, bearing and coupling" src="../Docs/assets/hardware/bearing-mount.jpg"></a>
+  <a href="../Docs/assets/hardware/stepper-coupling.jpg"><img height="200" alt="Spring-loaded odometry wheel: two tension springs hold the encoder wheel against the floor" src="../Docs/assets/hardware/stepper-coupling.jpg"></a>
+  <a href="../Docs/assets/hardware/vision-setup.jpg"><img height="200" alt="Robot and camera on the field, with vision tags" src="../Docs/assets/hardware/vision-setup.jpg"></a>
 </p>
-<p align="center"><sub><b>Wheel hub</b> &nbsp;·&nbsp; <b>stepper coupling</b> &nbsp;·&nbsp; <b>robot and camera on the field</b></sub></p>
+<p align="center"><sub><b>Wheel hub</b> &nbsp;·&nbsp; <b>spring-loaded odometry wheel</b> &nbsp;·&nbsp; <b>robot and camera on the field</b></sub></p>
+
+**Spring-loaded odometry wheels.** Two small encoder wheels ride on the table
+next to the drive modules. Each one is carried by a sprung lever: the two
+tension springs in the middle photo pull the wheel onto the floor, so it keeps
+contact - and keeps measuring - through shocks, bumps and the small chassis
+movements of a mecanum drive instead of skipping on a bad seam and losing the
+odometry.

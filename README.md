@@ -63,12 +63,15 @@ The electronics are designed in-house: one board carrying the STM32F722, four
 stepper drivers with heatsinks, the power stage and the I2C / encoder
 connectors, with a small OLED for the robot status. The frame mixes
 3D-printed structural parts with aluminium plates, and each drive module carries
-a mecanum wheel on a stepper through a printed gearbox.
+a mecanum wheel on a stepper through a printed gearbox. Two **spring-loaded
+odometry wheels** ride on the table: the springs pull each encoder wheel onto
+the floor so it keeps contact - and keeps measuring - through shocks, bumps and
+the small chassis movements of a mecanum drive.
 
 <p align="center">
-  <a href="Docs/assets/hardware/board.jpg"><img width="32%" alt="Controller board: STM32F722, four stepper drivers under heatsinks, power stage, status OLED" src="Docs/assets/hardware/board.jpg"></a>
-  <a href="Docs/assets/hardware/drivetrain.jpg"><img width="32%" alt="Drivetrain seen from above: four stepper modules and mecanum wheels around the controller board" src="Docs/assets/hardware/drivetrain.jpg"></a>
-  <a href="Docs/assets/hardware/robot.jpg"><img width="32%" alt="The assembled robot: electronics stack, battery, mecanum wheels and the vision tag" src="Docs/assets/hardware/robot.jpg"></a>
+  <a href="Docs/assets/hardware/board.jpg"><img height="230" alt="Controller board: STM32F722, four stepper drivers under heatsinks, power stage and a status OLED that reads Charara" src="Docs/assets/hardware/board.jpg"></a>
+  <a href="Docs/assets/hardware/drivetrain.jpg"><img height="230" alt="Drivetrain seen from above: four stepper modules and mecanum wheels, the two spring-loaded odometry wheels front and back" src="Docs/assets/hardware/drivetrain.jpg"></a>
+  <a href="Docs/assets/hardware/robot.jpg"><img height="230" alt="The assembled robot: electronics stack, battery, mecanum wheels and the vision tag" src="Docs/assets/hardware/robot.jpg"></a>
 </p>
 <p align="center"><sub><b>Controller board</b> &nbsp;·&nbsp; <b>drivetrain, top view</b> &nbsp;·&nbsp; <b>assembled robot</b></sub></p>
 
@@ -77,31 +80,39 @@ More in [`Electrical/`](Electrical/) (schematic, PCB routing) and
 
 ## The console in pictures
 
-A live session against the real STM32 board (`SW 3.2.0`, `FW 3.5`): the mission
-panel, a path drawn on the Eurobot 2026 table, the planner output (dashes) and
-the I2C link. The opponent `R1` is reported by the camera in the middle of the
-route, so the plan is regenerated around it live. Click any image for the full
+A live session against the real STM32 board (`SW 3.2.0`, `FW 3.5`): the sequence
+and mission panels, a path drawn on the Eurobot 2026 table, the planner output
+and the I2C link. The opponent `R1` is reported by the camera, so the plan is
+regenerated around it live. The console ships in two themes - a bright daylight
+theme and a **carbon-black night theme** (`Light / Dark / System`, remembered per
+browser) - and every map layer can be recoloured. Click any image for the full
 resolution.
 
-[![Charara field console: mission panel, drawn path, planned path around the opponent and live telemetry](Docs/assets/screenshots/console-overview.png)](Docs/assets/screenshots/console-overview.png)
+[![Charara field console, dark theme: sequence and mission cards, a drawn path, the planned path and live telemetry](Docs/assets/screenshots/console-overview-dark.png)](Docs/assets/screenshots/console-overview-dark.png)
 
 <p align="center">
-  <a href="Docs/assets/screenshots/console-reroute.png"><img width="49%" alt="Dynamic re-planning: the camera moves R1 into the route and the planner re-routes, shown by the log lines 'R1 moved ... our route is re-checked' and 'plan ready'" src="Docs/assets/screenshots/console-reroute.png"></a>
+  <a href="Docs/assets/screenshots/console-overview.png"><img width="49%" alt="Charara field console, light theme: the same mission with the sequence and mission cards, drawn and planned paths, goal with its arrival heading and the live telemetry" src="Docs/assets/screenshots/console-overview.png"></a>
+  <a href="Docs/assets/screenshots/console-theme-palette.png"><img width="49%" alt="Dark theme settings: Light / Dark / System appearance switcher and the full map colour palette with a hex readout per layer" src="Docs/assets/screenshots/console-theme-palette.png"></a>
+</p>
+<p align="center"><sub><b>Left:</b> the same console in the daylight theme &nbsp;·&nbsp; <b>Right:</b> dark theme and the full map palette - paths, robots, obstacles, goal, tools, each with its own colour</sub></p>
+
+<p align="center">
+  <a href="Docs/assets/screenshots/console-reroute.png"><img width="49%" alt="Dynamic re-planning: the camera moves R1 into the route and the planner re-routes around it, shown by the log lines 'R1 moved ... our route is re-checked' and 'plan ready'" src="Docs/assets/screenshots/console-reroute.png"></a>
   <a href="Docs/assets/screenshots/console-i2c-monitor.png"><img width="49%" alt="I2C monitor streaming protocol frames with payloads" src="Docs/assets/screenshots/console-i2c-monitor.png"></a>
 </p>
-<p align="center"><sub><b>Left:</b> live re-planning — the camera moves the opponent into the route, the log shows "our route is re-checked" then "plan ready" &nbsp;·&nbsp; <b>Right:</b> live I2C frames (TX/RX, status, payload)</sub></p>
+<p align="center"><sub><b>Left</b> (dark theme): live re-planning — the camera moves the opponent into the route, the log shows "our route is re-checked" then "plan ready" &nbsp;·&nbsp; <b>Right</b> (light theme): live I2C frames (TX/RX, status, payload)</sub></p>
 
 <p align="center">
   <a href="Docs/assets/screenshots/console-robot-config.png"><img width="49%" alt="Robot, opponent and planner configuration" src="Docs/assets/screenshots/console-robot-config.png"></a>
   <a href="Docs/assets/screenshots/console-calibration.png"><img width="49%" alt="Drive and turn calibration with measured-versus-expected fix buttons" src="Docs/assets/screenshots/console-calibration.png"></a>
 </p>
-<p align="center"><sub><b>Left:</b> robot body, clearance, camera-reported opponents, planner tuning &nbsp;·&nbsp; <b>Right:</b> drive / turn calibration with fix buttons</sub></p>
+<p align="center"><sub><b>Left</b> (dark theme): robot body, clearance, camera-reported opponents, planner tuning &nbsp;·&nbsp; <b>Right</b> (light theme): drive / turn calibration with fix buttons</sub></p>
 
 <p align="center">
   <a href="Docs/assets/screenshots/console-tests.png"><img width="49%" alt="Bench tests: pre-match readiness, square test and arc test" src="Docs/assets/screenshots/console-tests.png"></a>
   <a href="Docs/assets/screenshots/console-opponents-path-options.png"><img width="49%" alt="Opponent camera role and path options: speed, node step, corner radius" src="Docs/assets/screenshots/console-opponents-path-options.png"></a>
 </p>
-<p align="center"><sub><b>Left:</b> scripted bench tests &amp; pre-match readiness &nbsp;·&nbsp; <b>Right:</b> opponent camera role and planner geometry</sub></p>
+<p align="center"><sub><b>Left</b> (dark theme): scripted bench tests &amp; pre-match readiness &nbsp;·&nbsp; <b>Right</b> (light theme): opponent camera role and planner geometry</sub></p>
 
 ## 1. What it does
 
@@ -109,14 +120,14 @@ resolution.
 |---|---|
 | Field view | Big canvas of the Eurobot table (3000 x 2000 mm default); the real **Eurobot 2026 table** ships as `field/table.png` (rendered 1 px = 1 mm from `Docs/Eurobot_2026/table_FINALE_1.0.pdf`) with a built-in SVG fallback |
 | Set start pose | Click on the field to place the robot, then **drag away from the point to aim the heading - the angle value follows the cursor at the arrow tip**. A **popup next to the point** holds editable **X / Y / theta** fields (typing moves the marker live, values are clamped to the field and wrapped to +/-180 deg), plus **Validate** (same as **Set Pose**, Enter works too) and x/Esc to cancel - the UI and the STM32 both adopt the validated coordinates (`SET_POSE`) |
-| Goal | Click to place the goal, then **drag away from it to aim the arrival heading theta** (the numeric theta box in the Mission card edits it too). The goal leg is **routed around obstacles** like any other leg and the goal position is always reached exactly |
+| Goal | Click to place the goal, then **drag away from it to aim the arrival heading theta**. A **goal popup** opens next to the marker with editable **X / Y / theta** (empty theta = no arrival heading) and Apply / delete / close; clicking an existing goal reopens it (Enter applies, Esc closes without touching the goal). The goal leg is **routed around obstacles** like any other leg and the goal position is always reached exactly |
 | Draw paths | Freehand strokes with the mouse/touch are fitted to **lines and arcs** (arcs stay arcs, see section 4); drawing is **clamped to the playfield**. Consecutive paths are **connected**: a stroke started within 250 mm of the previous endpoint snaps onto it, and the planner routes the connecting leg |
 | Ghost preview | A semi-transparent robot (white halo + dashed outline, painted in your robot colour) shows where the commands leave the robot **before you execute anything**: it sits on the last drawn point facing along the line while you draw, animates every **+ Rotation** (in the commanded direction, even 270 deg), passes through waypoints, pauses in place and finishes on the goal - resimulated from the live robot pose on every edit. **Stepping a rotation's angle in the sequence** makes the shadow glide to that rotation's position and turn there by the new angle, so you see exactly what the command does |
 | Sequence steps | Ordered steps between paths: **+ Rotation** (turn in place, any angle; split into <=170 deg chunks), **+ Pause** (timed stop), **Forward / Back** moves and a **Release** step (stepper drivers off after the movement is fully idle; the next move re-energizes). Every step has x delete and ^ move buttons; Undo restores the previous list, **Clear path** empties it |
 | Waypoints | Clicking near a drawn path snaps the waypoint onto its **nearest point and splits the path there**; clicking away adds a free one (a waypoints-only mission works). The path **sweeps smoothly through each waypoint** like a drawn, rounded corner - the fillet stays within `waypoint_cut_mm` (default 50 mm) of the exact point; set it to 0 for an exact knife-point GOTO on the point. Shown as a small diamond while editing; waypoint x/y, rotation angle and pause seconds are **editable in place** in the sequence |
 | Robot geometry | The **Config** tab holds the robot size (default 300 x 300 mm, position = body centre), an **obstacle margin** (default 150 mm) and a **robot photo** (file picker with a **thumbnail preview** and *Clear*; drawn inside the robot square, downscaled to 512 px, stored in the browser). The planner derives its clearances from the size and margin: the path keeps every leg `half-diagonal` away from the field border (the whole body stays on the table) and `half-diagonal + margin` away from obstacles |
-| Display colours | The **Config** tab also lets you recolour the drawn path, the planned path, the reference path, the robot marker and the **turns & pauses** annotations (stored in the browser, **Reset colors** restores the defaults) |
-| Console layout | Side panel has three tabs: **Mission** (icon tool tiles - Pose, Draw, Goal, Waypoint, Box, Zone, Pan, Erase - with the active-tool hint and a collapsed **Details** fold for the long description; sequence with icon add/undo/redo buttons; **Mission** card grouped into *Target / Prepare & run / Safety* with icon buttons - **Plan**, **Set Pose**, **Execute**, **Pause**, **Resume**, **Stop**, **E-STOP**, **Clear Faults**, **Release motors**; drive pad as an icon D-pad), **Config** (grouped **Robot** body/clearance/photo with thumbnail preview, **Opponents** count/positions/photo, **Path options** with captioned sliders and checkbox chips + a **Details** fold, **Display** colours, **Field** size/Fit view - same icon-button card style) and **Calibration** (board settings registers, drive/turn tests, board error log). **Clear path / Clear obstacles** sit right under the tabs (both tabs), display colours are listed one per line with the squares **aligned in one column**, the sequence has **Undo / Redo**; **Execute** can be pressed again any time to replay the last plan; the **full-screen button** (header, top-right) toggles browser full screen |
+| Display colours | The **UI** tab recolours **every layer** of the map one per line with a hex readout - drawn path, planned path, reference, turns & pauses, waypoints, our robot, other robots (the red camera squares), obstacles, goal, ruler & angle, pose marker - stored in the browser, with **Reset all colours**. The same tab holds the **theme**: Light / Dark / System, remembered per browser, the dark theme a neutral carbon-black that also dims the table artwork |
+| Console layout | Left **Mission** panel: **Clear path / Clear obstacles**, the tool grid (Pose, Draw, Goal, Waypoint, Delay, Turn, Forward, Back, Release, Box, Zone, Pan, Erase, Ruler, Angle) with the active-tool hint and a **Details** fold, the **sequence** (Undo / Redo, inline x/y/angle/seconds/speed editing) and the **Mission** card grouped into *Prepare & run* (**Plan**, **Set Pose**, **Execute**, **Pause**, **Resume**, **Redo**) and *Safety* (**Stop**, **E-STOP**, **Clear Faults**, **Release motors** - the release asks for an inline UI confirmation first). The panel is **resizable** (drag the border, double-click to reset, remembered per browser) and switches the tool grid to three columns when narrow. A **settings rail** on the right opens the **Robot**, **UI**, **Calibration** and **Tests** drawers full height. The header carries the brand, the team selector, a recessed status cluster (camera, IMU, link, robot, state) that wraps gracefully on small screens, the **theme toggle** and **full screen** |
 | Robot settings & calibration | The **Calibration** tab reads and writes the board's settings registers (**GET/SET_CONFIG** over I2C): stepper wheel diameter, microsteps, robot/odometry tracks, speed limits, ramps, gains and direction masks - grouped in cards, each with its **own icon action bar**: green triangle **Apply** (write that group to the board RAM), disk **Save to flash** (`SAVE_CONFIG`; loaded again at boot) and undo **Restore** (re-read the group, drop local edits); hover a button shows the exact action. **Motor direction** has one 0/1 column per wheel (FL/FR/RL/RR) and **Encoder direction** one per odometry encoder (L/R) - each bit loaded from the board, so a single motor or encoder can be inverted on its own; the **strafe +Y pattern** keeps its four wheel columns. Drive and turn tests command a known motion, show what the board odometry reported, and the **fix buttons** rescale the matching register from a tape measurement. Board-wide **Reload from flash** and **Defaults** sit under the groups |
 | Board errors | The same tab shows the board **event log** (`GET /api/errors` / `QUERY_EVENTS`): faults, bad frames, rejected parameters, busy rejections, I2C and flash errors, config fallback, plus the boot reset cause and the config dirty flag; warn/error entries also appear in the service log |
 | I2C monitor | Collapsible pane at the bottom of the field view showing every I2C frame (TX/RX/errors with sequence number, status and payload). **Pause view** freezes the display, **Clear** empties the buffer, **Save log** downloads `charara_i2c_<timestamp>.log` |
