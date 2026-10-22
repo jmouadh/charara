@@ -18,6 +18,14 @@ project uses [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Console **dark mode** (Light / Dark / System, remembered per browser) with a
+  header toggle; the table artwork is veiled so every overlay keeps contrast.
+- Console **complete map palette**: drawn/planned/reference paths, turns &
+  pauses, waypoints, our robot, other robots (the red camera squares),
+  obstacles, goal, ruler and pose marker are all customizable, with a hex
+  readout per swatch.
+- **Resizable mission panel**: drag the border (col-resize grip), double-click
+  to reset, arrow keys for fine steps; the width persists in the browser.
 - Repository scaffolding: issue forms (bug / feature / task), pull request
   template, `CODEOWNERS`, CI (lint + full test suite + firmware tree check),
   `CONTRIBUTING.md` and this changelog.
@@ -28,12 +36,44 @@ project uses [Semantic Versioning](https://semver.org/).
   `-UseKey` and `-SetupKey` (the entry point `deploy.cmd` already referenced).
 - `SECURITY.md` - private vulnerability reporting and the credential policy.
 - Console screenshot set under `Docs/assets/screenshots/`, embedded in the
-  `README.md` gallery and the console guide.
+  `README.md` gallery and the console guide. The set now shows **both themes**
+  (a dark hero, a light/dark pair of the same mission) plus a dedicated
+  **theme &amp; map-palette** shot.
 - `LICENSE` (BSD-3-Clause), with the vendor licenses of the ST HAL and CMSIS
   called out.
 
 ### Changed
 
+- Hardware galleries (`README.md`, `Mecanical/README.md`) use **equal-height
+  photos**, and `board.jpg` / `drivetrain.jpg` are rotated upright, so the rows
+  line up instead of mixing portrait and landscape thumbnails. The spring
+  coupling is documented for what it is: the two tension springs hold the
+  **odometry (encoder) wheel** on the floor through shocks, so it keeps
+  measuring instead of skipping.
+- The goal is edited on the map: placing a goal opens a **goal popup** next to
+  the marker (X / Y / arrival heading, Apply / delete / close, Enter / Escape),
+  and clicking an already placed goal reopens it. The numeric **Goal theta**
+  box was removed from the Mission card.
+- The Release controls use a small **inline UI confirmation card** under the
+  button (Cancel/Escape closes it) instead of the native `window.confirm`
+  dialog; nothing is sent until Release is confirmed.
+- The Tools grid no longer overflows a narrow mission panel: it keeps four
+  columns at normal widths and switches to three below ~310 px.
+- Console header redesigned: one recessed status cluster (camera, IMU, link,
+  robot, state, execution) with subtle state tints and a compact two-row
+  layout below 960 px (three rows under 380 px); no more oversized/circular
+  pills. The map's "START - ..." text labels were removed - the solid/dashed
+  start ghosts are enough.
+- Console dark mode is now a neutral carbon-black theme (black/graphite
+  surfaces, no navy tint), including the map backing, glows and primary
+  actions.
+- Console settings rail: the collapse icon and every outline glyph follow the
+  current text colour (they were black-on-black in dark mode), and the
+  unselected tabs are legible outlined chips with a clear hover in both
+  themes.
+- Console sequence rows use a fixed index / description / actions grid, so the
+  per-step speed and waypoint fields wrap on narrow panels instead of sliding
+  under the move/delete buttons.
 - `deploy/host/configure_wifi.sh`: `HAVE_WIFI_CREDS` is derived from the loaded
   environment; without credentials the script goes straight to the hotspot so
   the robot is always reachable.
