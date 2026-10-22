@@ -8,10 +8,10 @@ the Tailscale `vpn` sidecar) or `http://127.0.0.1:8090` (dev server).
 
 ```
 +----------------------------------------------+-------------------------+
-| header: WS pill - REAL/MOCK selector -       |                         |
-|         ROBOT/state/exec pills + full screen |        field canvas     |
+| header: brand - team - status cluster -      |                         |
+|         theme/full screen actions            |        field canvas     |
 |----------------------------------------------|   (+ dashed camera      |
-| Left panel (320 px)                          |    obstacles, ghost,    |
+| Left panel (resizable, 320 px default)       |    obstacles, ghost,    |
 |  Mission tab:  Tools - Sequence - Mission    |    plan preview)        |
 |  Config tab:   Geometry - Path options -     |                         |
 |                Display - Field               |                         |
@@ -23,6 +23,13 @@ the Tailscale `vpn` sidecar) or `http://127.0.0.1:8090` (dev server).
 +----------------------------------------------+-------------------------+
 ```
 
+The **mission panel** can be widened or narrowed: hover its right border
+until the `col-resize` cursor and the grip appear, then drag it (250-620 px).
+Double-click the border to restore 320 px; focus it and use the arrow keys
+(Shift = bigger steps) for fine adjustments. The width is remembered in the
+browser. The tool grid stays inside the panel at every width: it keeps four
+columns normally and drops to three when the panel is narrow.
+
 Telemetry overlay (top-left of the field): `x`, `y`, `theta`, wheel speeds,
 active faults - live from the board (or the simulator). It is translucent and
 starts collapsed to one line (`x`, `y`, `theta`, faults); the corner chevron
@@ -32,16 +39,30 @@ and the config dirty flag; the board error list lives in the Calibration tab.
 
 ![Console overview: mission panel, field canvas with drawn and planned paths, settings rail and I2C monitor](assets/screenshots/console-overview.png)
 
-## 2. Header pills
+The same session in the **dark theme** - the carbon-black palette the console
+switches to with one click (see *Appearance* in section 8):
 
-| Pill | Meaning |
+![The same console in the dark theme: sequence and mission cards, drawn and planned paths, goal with its arrival heading, live telemetry](assets/screenshots/console-overview-dark.png)
+
+## 2. Header status cluster
+
+The header groups the camera, IMU, link mode, robot link, motion state and
+execution progress in **one recessed status strip**, with the theme and full
+screen actions at the far right. The strip is compact on wide screens and moves
+to its own row below the brand when the window is narrow (the header grows to
+two rows; under 380 px the execution chip can add a third). No item is clipped
+or turned into a circle at any width.
+
+| Item | Meaning |
 |---|---|
-| **WS** | console <-> service WebSocket |
+| **camera** | vision channel: green when a real camera owns `/ws/vision`, neutral while the console reports the opponent robots, red when the service link is down |
+| **IMU** | MPU6050 health: green = ready, amber = calibrating, neutral = unavailable (wheel-only heading) |
 | **REAL / MOCK** selector | switches the robot link (`POST /api/mode`). Requesting REAL without a board/bus is refused with a hint. Switching is refused while a mission executes. |
 | **ROBOT** | board answers on the link |
-| **state pill** | motion state (IDLE / DRIVE / TURN / STRAFE / GOTO / ARC / FAULT / E-STOP) |
-| **EXEC pill** | execution progress `EXEC running 12/48` |
-| **full screen button** (top-right) | toggles browser full screen (the whole console, F11-like); the icon flips to *exit*, Escape leaves too |
+| **state** | motion state (IDLE / DRIVE / TURN / STRAFE / GOTO / ARC / FAULT / E-STOP) |
+| **EXEC** | execution progress `EXEC running 12/48`; hidden while idle |
+| **full screen** (top-right) | toggles browser full screen (the whole console, F11-like); the icon flips to *exit*, Escape leaves too |
+| **moon / sun** (top-right) | switches between the light and dark interfaces; the UI tab's **Appearance** group also offers **System** (follows the operating system). The choice is stored in the browser. |
 
 ## 3. Tools (Mission tab)
 
@@ -49,12 +70,12 @@ and the config dirty flag; the board error list lives in the Calibration tab.
 |---|---|
 | **Pose** | place the robot *by hand*: click its position, then **drag away from the point to aim the heading - the angle value follows your cursor** (theta pill at the arrow tip). A popup next to the point has editable **X / Y / theta** fields (typing moves the dashed marker live; clamped to the field, theta wrapped to +/-180 deg) and **Validate** (same as *Set Pose*; Enter works too). x or Esc cancels. Validating tells the UI **and** the board where the robot is - nothing moves. |
 | **Draw** | freehand/polyline drawing; the start snaps to the robot or the previous path end within 250 mm. Consecutive paths are connected by routed connector legs. The **Draw speed** box sets the per-step speed of the next path(s); empty = the system speed. |
-| **Goal** | click to place the goal, drag away to aim the arrival heading theta (also editable by the numeric box in the Mission card). The goal leg is routed around obstacles and the goal is clamped out of the border/obstacle clearance (it is a stop point, like a waypoint). |
+| **Goal** | click to place the goal, drag away to aim the arrival heading theta. A popup opens next to the marker with editable **X / Y / theta** (empty theta = no arrival heading) plus **Apply**, delete and close (Enter applies, Esc closes without touching the goal). Clicking an already placed goal - with any tool except Erase and Goal - reopens the same popup; drag pans the map as usual when the goal is only clicked. The goal leg is routed around obstacles and the goal is clamped out of the border/obstacle clearance (it is a stop point, like a waypoint). |
 | **Waypoint** | click near a path -> the waypoint snaps to its nearest point and **splits the path there**; click away -> free waypoint. **Keep the pointer down and drag away from the point to aim the arrival angle** (exactly like Pose/Goal; the arrow follows the pointer, and `combine with the approach` is enabled). The **Waypoint speed** box sets the per-step speed of the next waypoint(s); empty = system speed. Click an existing waypoint for the popup (X/Y, arrival angle, speed, combine). The robot *sweeps* through waypoints (within ~5 cm) unless `waypoint_cut_mm = 0` (exact crossing). A waypoint is a **stop point** with its own clearance: **Robot > Waypoint clearance** (extra mm over half the robot height; 0 = 150 mm for a 300 mm body). The point is clamped out of the field border and every obstacle's waypoint clearance. A point inside the routing margin is reached by a **straight final leg**; if it is too close to turn in place, an arrival angle is performed at a safe stand-off BEFORE the final leg. If the mission continues from that point, the robot **reaches it exactly**, then reverses (or moves forward) to a turn-safe point, rotates and continues - it never rotates on the tight waypoint. |
 | **Delay** | opens a small value box under the tools: enter the hold time in seconds, then **Add delay**. |
 | **Turn** | opens the turn box: angle in degrees (positive = CCW, negative = CW), optional speed, then **Add turn**. |
 | **Forward / Back** | open the move box: distance in mm, optional speed, then **Add forward** / **Add backward**. The robot drives straight along the heading held at that mission point; Back reverses without turning around. |
-| **Release** | opens the release box: **Add release step** inserts a motor-release action in the sequence, **Release now** sends it immediately. Both are allowed only after every movement has completely finished; the drivers turn off without latching E-STOP and the next move re-energizes them automatically. |
+| **Release** | opens the release box: **Add release step** inserts a motor-release action in the sequence, **Release now** sends it immediately. Both are allowed only after every movement has completely finished; the drivers turn off without latching E-STOP and the next move re-energizes them automatically. **Release now** first expands a small inline confirmation card below the buttons (UI-styled, Cancel / Escape closes) - no browser dialog. |
 | **Box** / **Zone** | drag **static** obstacles. Set them while the robot stands still: the tools **lock while a mission executes** (a message says so). Obstacles are clamped to the game area (the planner clips them too), like waypoints. While the robot runs, moving obstacles are dragged instead (see below). Changing the map while idle re-plans an on-screen plan at once. |
 | **Pan** | drag to pan, wheel zooms. `Fit view` (Config) resets. |
 | **Erase** | remove paths, obstacles, the goal (sequence steps: x in the list). |
@@ -78,6 +99,9 @@ runs only after the preceding movement is fully idle; a following move
 re-energizes the stepper drivers by itself.
 
 * Every path/waypoint/rotation/pause/move/release row has **x delete** and **^ move**.
+* The list adapts to a narrow panel: the description wraps (waypoint axes stay
+  together and are labeled **X / Y**) while the move/delete buttons keep their
+  column, so values never slide under the controls.
 * Waypoint **x / y**, rotation **angle**, pause **seconds** are editable inline - each edit updates the ghost preview and marks the plan out of date.
 * Paths, waypoints, rotations and moves show their **per-step speed** in the row (`@ ... mm/s`, empty = system speed). It can be changed at any time - after planning, while editing a loaded strategy, or before the next Plan; pressing **Plan** again sends the new speeds.
 * **Undo / Redo** for the whole list.
@@ -85,12 +109,13 @@ re-energizes the stepper drivers by itself.
 
 ## 5. Mission card
 
-Three groups, in reading order: **Target**, **Prepare & run** (buttons:
-**Plan**, **Set Pose**, **Execute**, **Pause**, **Resume**), **Safety**.
+Two groups, in reading order: **Prepare & run** (buttons: **Plan**,
+**Set Pose**, **Execute**, **Pause**, **Resume**) and **Safety**. The goal is
+edited on the map (placing or clicking it opens the goal popup - see the
+*Goal* tool), so the card no longer carries a numeric target box.
 
 | Control | Effect |
 |---|---|
-| **Goal theta** | arrival heading of the last node (degrees) |
 | **Plan** | plans the mission (`POST /api/plan`). While executing, it is a *re-check*: the remaining route is re-planned only when actually affected (log tells the outcome). |
 | **Set Pose** | commits the Pose draft (same as popup *Validate*) |
 | **Execute** | runs the last plan; re-pressable to replay it (full-width green button). With `STREAMING_EXEC=1` (and firmware >= 3.4) the same button drives the whole path with the streaming follower - one acceleration, one deceleration, no stop at the junctions; the progress line shows **streaming mode active** with the millimetres left. The follower **aligns in place before driving** when the path lies behind the robot (it never drives forward towards a target behind it) and aborts at the field-edge geofence or when the live pose is > 300 mm off the plan - re-plan from the real pose in that case. The plan's **final heading** (waypoint angle / goal theta) is performed with an in-place turn after the path ends. A plan containing an explicit rotation, pause, **motor release** or **mid-route arrival turn** cannot be encoded as a polyline: Execute uses the segment backend for it and logs *"streaming skipped: this plan performs an in-place rotation, pause, motor release or arrival turn..."*. |
@@ -98,7 +123,7 @@ Three groups, in reading order: **Target**, **Prepare & run** (buttons:
 | **Stop** | abort the run (execution stops; the robot holds position) |
 | **E-STOP** | latched emergency stop - clear faults afterwards |
 | **Clear Faults** | `CLEAR_FAULTS` on the board |
-| **Release motors** | turn the stepper drivers off (freewheel) when the robot stands still, to stop the holding torque from draining the battery. It is refused while a mission executes or while the board reports any moving state; it does **not** latch E-STOP, and the next move re-energizes the drivers automatically. The robot may still roll on a slope. |
+| **Release motors** | turn the stepper drivers off (freewheel) when the robot stands still, to stop the holding torque from draining the battery. It is refused while a mission executes or while the board reports any moving state; it does **not** latch E-STOP, and the next move re-energizes the drivers automatically. The button first opens a small inline confirmation card below it (UI-styled; Cancel or Escape closes) and sends nothing until **Release** is pressed. The robot may still roll on a slope. |
 | plan stats | length, segments, estimated time, primitives, node counts (GOTO / ARC / actions), warnings |
 
 ## 6. Drive pad
@@ -146,12 +171,20 @@ Cards, each with small group captions, icon buttons and a collapsed
   obstacle avoidance (Theta*) and corner rounding. The **Details** fold
   explains every option. (Waypoint sweep depth `waypoint_cut_mm` is
   API-level.)
-* **Display** - the five drawing colours (drawn path, planned path,
-  reference, robot, turns & pauses); the swatches are aligned in one column;
-  persisted in the browser (`localStorage`). *Reset colours* restores the
-  defaults.
+* **Appearance** - the interface theme: **Light**, **Dark** or **System**. The
+  choice is remembered in the browser; the header moon/sun button toggles
+  light/dark from anywhere. Dark mode uses a neutral carbon-black palette (no
+  navy/blue tint), dims the table artwork and switches the panels, cards, log
+  and overlays to black and graphite.
+* **Map colours** - every drawing colour: drawn path, planned path, reference,
+  turns & pauses, waypoints, **our robot**, **other robots (the red camera
+  squares)**, obstacles, goal, ruler/angle and the pose marker. Each row shows
+  the swatch and its hex value; changes are persisted in the browser
+  (`localStorage`) and apply live. *Reset all colours* restores the defaults.
 * **Field** - *Size*: width/height + **Apply**; *View*: **Fit view**
   (zoom the map so the whole field fits).
+
+![UI tab in the dark theme: Light / Dark / System appearance switcher and the map colour palette with a hex readout per layer](assets/screenshots/console-theme-palette.png)
 
 ![Robot tab: body size, obstacle clearance, robot photo, camera-reported opponents and planner path options](assets/screenshots/console-robot-config.png)
 
@@ -191,11 +224,11 @@ the note under the buttons shows the exact `GYRO_SCALE=...` line to add to
 
 | Layer | Look |
 |---|---|
-| drawn mission | your stroke color (default amber), thin |
+| drawn mission | your **Drawn path** color (default red), thin |
 | ghost robot | semi-transparent square (same size as the robot box) = where the commands leave the robot (rotations acted out) |
-| plan preview | cyan path + node dots; grey dashed = fitted reference; arcs drawn as a dashed overlay labeled `arc R##`; turns/pauses/releases labeled |
-| robot | solid square (config Width x Height, rotated with the heading) with the **front chevron inside it**, robot color; a photo fills the square when one is set; red when faulted |
-| obstacles | solid red outlines (console boxes/zones), **dashed orange-red with ids `R1`...** (the opponent robots this console reports - dimmed while a real camera streams), other dashed orange-red (a real camera) |
+| plan preview | **Planned path** color (default pink) + node dots; **Reference** color, dashed = fitted reference; arcs drawn as a dashed overlay labeled `arc R##`; **Turns & pauses** color for actions |
+| robot | solid square (config Width x Height, rotated with the heading) with the **front chevron inside it**, **Our robot** color; a photo fills the square when one is set; red when faulted |
+| obstacles | **Obstacles** color outlines (console boxes/zones), **Other robots** color (default red-orange) dashed squares with ids `R1`... (the opponent robots this console reports - dimmed while a real camera streams), other dashed outlines (a real camera) |
 | mock watermark | yellow "MOCK - SIMULATED ROBOT" |
 
 ## 11. Warnings & logs

@@ -36,9 +36,23 @@ function defaultRobots(count = 1) {
   return robots;
 }
 
-// drawing palette (persisted in localStorage)
-const COLOR_DEFAULTS = { stroke: "#e03434", path: "#e2528c", ref: "#9b9188", robot: "#2e7d52", actions: "#a02a3f" };
+// drawing palette (persisted in localStorage) - every map layer is themeable
+const COLOR_DEFAULTS = {
+  stroke: "#e03434",    // drawn (pending) path
+  path: "#e2528c",      // planned path
+  ref: "#9b9188",       // fitted reference
+  actions: "#a02a3f",   // turns, pauses, releases
+  waypoint: "#ffb347",  // waypoint marker + arrival heading
+  robot: "#2e7d52",     // our robot
+  opponent: "#ff6b4a",  // other robots (camera reports) - the red squares
+  obstacle: "#e74c3c",  // static box/zone obstacles
+  goal: "#2ecc71",      // goal marker
+  measure: "#3ec9d6",   // ruler / angle tool
+  draft: "#f5a623",     // pose placement preview
+};
 const COLORS_KEY = "charara.colors";
+const THEME_KEY = "charara.theme";
+const THEME_CHOICES = ["light", "dark", "system"];
 
 // robot / opponent photos (data URLs, persisted in localStorage) - they are
 // drawn as the background of the robot square and of the opponent squares
@@ -89,6 +103,7 @@ const app = {
   calib: null,       // last /config/robot response (register metadata + values)
   calibDriveOdom: null, // board-reported distance of the last drive test [mm]
   calibTurnOdom: null,  // board-reported angle of the last turn test [deg]
+  theme: loadTheme(),   // "light" | "dark" | "system", persisted in the browser
   colors: loadColors(), // drawing palette, persisted in the browser
   robotPhoto: loadPhoto(ROBOT_PHOTO_KEY),    // background of the robot square
   opponentPhoto: loadPhoto(OPPONENT_PHOTO_KEY), // background of the R1.. squares
@@ -109,6 +124,36 @@ function loadColors() {
 
 function saveColors() {
   try { localStorage.setItem(COLORS_KEY, JSON.stringify(app.colors)); } catch (error) { /* private mode */ }
+}
+
+function loadTheme() {
+  try {
+    const saved = localStorage.getItem(THEME_KEY);
+    return THEME_CHOICES.includes(saved) ? saved : "light";
+  } catch (error) {
+    return "light";
+  }
+}
+
+/** The dark veil is applied to the table artwork in the canvas, so every
+ *  helper that needs to know the ACTIVE theme asks the DOM (system included). */
+function isDarkTheme() {
+  return document.documentElement.dataset.theme === "dark";
+}
+
+/** Native canvas outline that stays visible on the bright table and on the
+ *  dark one (robot body, goal pole). */
+function themeOutline() {
+  return isDarkTheme() ? "rgba(226, 236, 250, .82)" : "#0b0f14";
+}
+
+/** Lighten a hex colour toward white (readable labels on a dark chip). */
+function lightenHex(hex, amount) {
+  const m = /^#?([0-9a-f]{6})$/i.exec(hex || "");
+  if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  const mix = (channel) => Math.round(channel + (255 - channel) * amount);
+  return `rgb(${mix((n >> 16) & 255)}, ${mix((n >> 8) & 255)}, ${mix(n & 255)})`;
 }
 
 function hexToRgba(hex, alpha) {
@@ -188,6 +233,86 @@ if (fullscreenBtn) {
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const deg = (rad) => (rad * 180) / Math.PI;
 const norm180 = (a) => (((a % 360) + 540) % 360) - 180;
+
+// ------------------------------------------------ mission panel resizing --
+/** The mission panel keeps its own width: drag the border strip (col-resize),
+ *  use the arrow keys on it, or double-click to go back to the default. */
+const PANEL_WIDTH_KEY = "charara.panelWidth";
+const PANEL_WIDTH_DEFAULT = 320;
+const PANEL_WIDTH_MIN = 250;
+const PANEL_WIDTH_MAX = 620;
+let panelWidthPx = PANEL_WIDTH_DEFAULT;
+
+function panelMaxWidth() {
+  return Math.max(PANEL_WIDTH_MIN, Math.min(PANEL_WIDTH_MAX, Math.round(window.innerWidth * 0.6)));
+}
+
+function applyPanelWidth(width, { persist = true } = {}) {
+  panelWidthPx = Math.round(clamp(Number(width) || PANEL_WIDTH_DEFAULT, PANEL_WIDTH_MIN, panelMaxWidth()));
+  document.documentElement.style.setProperty("--panel-w", `${panelWidthPx}px`);
+  const resizer = el("panel-resizer");
+  if (resizer) {
+    resizer.setAttribute("aria-valuenow", String(panelWidthPx));
+    resizer.setAttribute("aria-valuemax", String(panelMaxWidth()));
+  }
+  if (persist) {
+    try { localStorage.setItem(PANEL_WIDTH_KEY, String(panelWidthPx)); } catch (error) { /* private mode */ }
+  }
+}
+
+function loadPanelWidth() {
+  try {
+    const saved = Number(localStorage.getItem(PANEL_WIDTH_KEY));
+    return Number.isFinite(saved) && saved > 0 ? saved : PANEL_WIDTH_DEFAULT;
+  } catch (error) {
+    return PANEL_WIDTH_DEFAULT;
+  }
+}
+
+const panelResizer = el("panel-resizer");
+if (panelResizer) {
+  const panel = el("panel");
+  let dragStartX = 0;
+  let dragStartWidth = 0;
+  let dragging = false;
+
+  const endDrag = (event) => {
+    if (!dragging) return;
+    dragging = false;
+    panelResizer.classList.remove("dragging");
+    document.body.classList.remove("resizing-panel");
+    if (event && panelResizer.hasPointerCapture(event.pointerId)) {
+      panelResizer.releasePointerCapture(event.pointerId);
+    }
+    applyPanelWidth(panelWidthPx);   // persist the final width
+  };
+
+  panelResizer.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    dragging = true;
+    dragStartX = event.clientX;
+    dragStartWidth = panel ? panel.getBoundingClientRect().width : panelWidthPx;
+    panelResizer.setPointerCapture(event.pointerId);
+    panelResizer.classList.add("dragging");
+    document.body.classList.add("resizing-panel");
+    event.preventDefault();
+  });
+  panelResizer.addEventListener("pointermove", (event) => {
+    if (!dragging) return;
+    applyPanelWidth(dragStartWidth + (event.clientX - dragStartX), { persist: false });
+  });
+  panelResizer.addEventListener("pointerup", endDrag);
+  panelResizer.addEventListener("pointercancel", endDrag);
+  panelResizer.addEventListener("dblclick", () => applyPanelWidth(PANEL_WIDTH_DEFAULT));
+  panelResizer.addEventListener("keydown", (event) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const step = event.shiftKey ? 40 : 12;
+    applyPanelWidth(panelWidthPx + (event.key === "ArrowRight" ? step : -step));
+  });
+  window.addEventListener("resize", () => applyPanelWidth(loadPanelWidth(), { persist: false }));
+  applyPanelWidth(loadPanelWidth(), { persist: false });
+}
 
 function cssSize() {
   const rect = canvas.parentElement.getBoundingClientRect();
@@ -672,9 +797,38 @@ function onExec(data) {
 /** The release controls are only usable after a movement has completely
  *  finished. The board and the API enforce the same rule; disabling the
  *  buttons keeps the operator from even trying while the wheels turn. */
+let releaseConfirmSettle = null;
+
 function releaseBlocked() {
   const state = app.telemetry ? app.telemetry.state : null;
   return execActive() || (state !== null && state !== 0);
+}
+
+/** UI-styled inline confirmation instead of the native window.confirm. The
+ *  small card is moved below whichever release button was pressed. */
+function inlineReleaseConfirm(anchor) {
+  const panel = el("release-confirm");
+  if (!panel) return Promise.resolve(true);
+  if (releaseConfirmSettle) settleReleaseConfirm(false);
+  if (anchor) {
+    const grid = anchor.closest(".grid2");
+    const row = anchor.closest(".row");
+    if (grid) anchor.insertAdjacentElement("afterend", panel);
+    else if (row && row.parentElement) row.insertAdjacentElement("afterend", panel);
+    else anchor.insertAdjacentElement("afterend", panel);
+  }
+  panel.classList.remove("hidden");
+  const yes = el("release-confirm-yes");
+  if (yes) setTimeout(() => yes.focus(), 0);
+  return new Promise((resolve) => { releaseConfirmSettle = resolve; });
+}
+
+function settleReleaseConfirm(result) {
+  const panel = el("release-confirm");
+  if (panel) panel.classList.add("hidden");
+  const settle = releaseConfirmSettle;
+  releaseConfirmSettle = null;
+  if (settle) settle(result);
 }
 
 function syncReleaseButtons() {
@@ -689,18 +843,17 @@ function syncReleaseButtons() {
         ? "Release the stepper motors now (drivers off; next move re-energizes)"
         : "Release the stepper motors (drivers off) when the robot stands still - the next move re-energizes them automatically";
   });
+  const confirmYes = el("release-confirm-yes");
+  if (confirmYes) confirmYes.disabled = blocked;
+  if (blocked && releaseConfirmSettle) settleReleaseConfirm(false);
 }
 
-async function releaseMotorsNow() {
+async function releaseMotorsNow(anchor) {
   if (releaseBlocked()) {
     logLine("warn", "release motors refused: the robot is still moving - wait until the movement has completely finished");
     return;
   }
-  if (!window.confirm(
-    "Release the stepper motors?\n\n" +
-    "The drivers turn off (freewheel) so the robot does not hold position or drain the battery. " +
-    "This is only possible while the robot is completely stopped. The next move re-energizes the drivers automatically."
-  )) return;
+  if (!(await inlineReleaseConfirm(anchor))) return;
   try {
     await api("/release_motors", "POST");
     logLine("info", "motors released - stepper drivers off; the next move re-energizes them");
@@ -804,15 +957,22 @@ function draw() {
   const fieldH = fh - fy;
   if (app.bg.ok && app.bg.image) {
     ctx.drawImage(app.bg.image, fx, fy, fieldW, fieldH);
+    if (isDarkTheme()) {
+      // night mode: black veil over the printed table, drawn layers keep contrast
+      ctx.save();
+      ctx.fillStyle = "rgba(0, 0, 0, .64)";
+      ctx.fillRect(fx, fy, fieldW, fieldH);
+      ctx.restore();
+    }
   } else {
-    ctx.fillStyle = "#f3efe6";
+    ctx.fillStyle = isDarkTheme() ? "#0f0f0f" : "#f3efe6";
     ctx.fillRect(fx, fy, fieldW, fieldH);
-    ctx.fillStyle = "#c9c2b4";
+    ctx.fillStyle = isDarkTheme() ? "#303030" : "#c9c2b4";
     ctx.fillRect(fx, fy, fieldW, 6);
     ctx.fillRect(fx, fy + fieldH - 6, fieldW, 6);
     ctx.fillRect(fx, fy, 6, fieldH);
     ctx.fillRect(fx + fieldW - 6, fy, 6, fieldH);
-    ctx.fillStyle = "#8a8577";
+    ctx.fillStyle = isDarkTheme() ? "#a0a0a0" : "#8a8577";
     ctx.font = "12px sans-serif";
     ctx.fillText(`Eurobot table ${app.field.width_mm} x ${app.field.height_mm} mm`, fx + 14, fy + 20);
   }
@@ -846,7 +1006,7 @@ function draw() {
 
 function drawGrid() {
   const step = app.view.zoom > 0.25 ? 100 : 500;
-  ctx.strokeStyle = "rgba(60, 70, 90, .18)";
+  ctx.strokeStyle = isDarkTheme() ? "rgba(235, 235, 235, .14)" : "rgba(60, 70, 90, .18)";
   ctx.lineWidth = 1;
   ctx.beginPath();
   for (let x = 0; x <= app.field.width_mm; x += step) {
@@ -863,8 +1023,9 @@ function drawGrid() {
 }
 
 function drawObstacles() {
-  ctx.fillStyle = "rgba(231, 76, 60, .22)";
-  ctx.strokeStyle = "rgba(231, 76, 60, .75)";
+  const obstacleColor = app.colors.obstacle || COLOR_DEFAULTS.obstacle;
+  ctx.fillStyle = hexToRgba(obstacleColor, .22);
+  ctx.strokeStyle = hexToRgba(obstacleColor, .75);
   ctx.lineWidth = 1.5;
   for (const obstacle of app.obstacles) {
     if (obstacle.kind === "rect") {
@@ -885,7 +1046,7 @@ function drawObstacles() {
     const d = app.drag;
     const [x0, y0] = worldToScreen(Math.min(d.a[0], d.b[0]), Math.max(d.a[1], d.b[1]));
     const [x1, y1] = worldToScreen(Math.max(d.a[0], d.b[0]), Math.min(d.a[1], d.b[1]));
-    ctx.strokeStyle = "#e74c3c";
+    ctx.strokeStyle = obstacleColor;
     ctx.setLineDash([4, 3]);
     ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
     ctx.setLineDash([]);
@@ -894,7 +1055,7 @@ function drawObstacles() {
     const d = app.drag;
     const [cx, cy] = worldToScreen(d.a[0], d.a[1]);
     const r = Math.hypot(d.b[0] - d.a[0], d.b[1] - d.a[1]) * app.view.zoom;
-    ctx.strokeStyle = "#e74c3c";
+    ctx.strokeStyle = obstacleColor;
     ctx.setLineDash([4, 3]);
     ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
     ctx.setLineDash([]);
@@ -919,9 +1080,10 @@ function drawVisionObstacles() {
     x: robot.cx - robot.w / 2, y: robot.cy - robot.h / 2, w: robot.w, h: robot.h,
   })));
   ctx.save();
+  const opponentColor = app.colors.opponent || COLOR_DEFAULTS.opponent;
   ctx.setLineDash([7, 5]);
-  ctx.strokeStyle = "#ff6b4a";
-  ctx.fillStyle = "rgba(255, 107, 74, .10)";
+  ctx.strokeStyle = opponentColor;
+  ctx.fillStyle = hexToRgba(opponentColor, .10);
   ctx.lineWidth = 2;
   for (const obstacle of app.vision) {
     if (obstacle.kind !== "circle" && ownRects.has(visionRectKey(obstacle))) continue;
@@ -965,16 +1127,11 @@ function drawOpponentPhoto(x0, y0, pw, ph) {
 function drawTeamStarts() {
   const info = app.team;
   if (!info || !info.start || !info.opponent || !info.opponent.start) return;
-  drawStartGhost(info.start, TEAM_COLORS[info.current] || "#efc13c", `START - ${info.label}`, true);
-  drawStartGhost(
-    info.opponent.start,
-    TEAM_COLORS[info.opponent.team] || "#4b7bec",
-    `R1 START - ${info.opponent.label}`,
-    false,
-  );
+  drawStartGhost(info.start, TEAM_COLORS[info.current] || "#efc13c", true);
+  drawStartGhost(info.opponent.start, TEAM_COLORS[info.opponent.team] || "#4b7bec", false);
 }
 
-function drawStartGhost(pose, color, label, ours) {
+function drawStartGhost(pose, color, ours) {
   const [x, y, th] = pose;
   const rw = parseFloat(el("robot-w") && el("robot-w").value) || 300;
   const rh = parseFloat(el("robot-h") && el("robot-h").value) || 300;
@@ -1000,9 +1157,6 @@ function drawStartGhost(pose, color, label, ours) {
   ctx.lineTo(ex - 9 * Math.cos(ang + 0.42), ey - 9 * Math.sin(ang + 0.42));
   ctx.closePath();
   ctx.fill();
-  ctx.globalAlpha = 1;
-  ctx.font = "bold 11px 'Segoe UI', sans-serif";
-  ctx.fillText(label, sx + 12, sy - 8);
   ctx.restore();
 }
 
@@ -1015,12 +1169,13 @@ function drawRobots() {
   for (const robot of app.robots) {
     const [x0, y0] = worldToScreen(robot.cx - robot.w / 2, robot.cy + robot.h / 2);
     const [x1, y1] = worldToScreen(robot.cx + robot.w / 2, robot.cy - robot.h / 2);
+    const opponentColor = app.colors.opponent || COLOR_DEFAULTS.opponent;
     ctx.setLineDash([6, 4]);
-    ctx.fillStyle = grabbed === robot.id ? "rgba(255, 107, 74, .30)" : "rgba(255, 107, 74, .15)";
-    ctx.strokeStyle = "#ff6b4a";
+    ctx.fillStyle = hexToRgba(opponentColor, grabbed === robot.id ? .30 : .15);
+    ctx.strokeStyle = opponentColor;
     if (live) {
-      ctx.fillStyle = "rgba(140, 148, 160, .08)";
-      ctx.strokeStyle = "rgba(150, 158, 170, .75)";
+      ctx.fillStyle = "rgba(160, 160, 160, .08)";
+      ctx.strokeStyle = "rgba(170, 170, 170, .75)";
     }
     ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
     if (!live) drawOpponentPhoto(x0, y0, x1 - x0, y1 - y0);
@@ -1029,9 +1184,9 @@ function drawRobots() {
     ctx.font = "bold 12px 'Segoe UI', sans-serif";
     const text = live ? `${robot.id} - paused` : robot.id;
     const width = ctx.measureText(text).width;
-    ctx.fillStyle = "rgba(20, 24, 33, .78)";
+    ctx.fillStyle = "rgba(12, 12, 12, .85)";
     ctx.fillRect(x0 + 4, y0 + 4, width + 10, 16);
-    ctx.fillStyle = live ? "#aeb6c2" : "#ff9d85";
+    ctx.fillStyle = live ? "#aeb6c2" : lightenHex(app.colors.opponent || COLOR_DEFAULTS.opponent, .35);
     ctx.fillText(text, x0 + 9, y0 + 16);
   }
   ctx.restore();
@@ -1175,11 +1330,12 @@ function drawPlan() {
 function drawGoal() {
   if (!app.goal) return;
   const [sx, sy] = worldToScreen(app.goal.x, app.goal.y);
-  ctx.fillStyle = "#2ecc71";
+  const goalColor = app.colors.goal || COLOR_DEFAULTS.goal;
+  ctx.fillStyle = goalColor;
   ctx.beginPath();
   ctx.arc(sx, sy, 6, 0, Math.PI * 2);
   ctx.fill();
-  ctx.strokeStyle = "#0b0f14";
+  ctx.strokeStyle = themeOutline();
   ctx.lineWidth = 2;
   ctx.beginPath();
   ctx.moveTo(sx, sy);
@@ -1190,12 +1346,12 @@ function drawGoal() {
   ctx.lineTo(sx + 12, sy - 13);
   ctx.lineTo(sx, sy - 8);
   ctx.closePath();
-  ctx.fillStyle = "#2ecc71";
+  ctx.fillStyle = goalColor;
   ctx.fill();
   if (app.goal.theta !== null && app.goal.theta !== undefined) {
     // arrival heading: drag from the goal to aim it
     const rad = (app.goal.theta * Math.PI) / 180;
-    ctx.strokeStyle = "#2ecc71";
+    ctx.strokeStyle = goalColor;
     ctx.lineWidth = 2.5;
     ctx.beginPath();
     ctx.moveTo(sx, sy);
@@ -1207,6 +1363,7 @@ function drawGoal() {
 // editor-only markers: the plan never renders waypoints (the path only
 // crosses them), but you must see where they are while building the mission
 function drawWaypoints() {
+  const waypointColor = app.colors.waypoint || COLOR_DEFAULTS.waypoint;
   for (const item of app.items) {
     if (item.kind !== "waypoint") continue;
     const [sx, sy] = worldToScreen(item.x, item.y);
@@ -1217,7 +1374,7 @@ function drawWaypoints() {
       // the arrival angle: a small arrow showing which way the robot faces
       // when it reaches the point (amber = carries a heading constraint)
       const rad = (item.theta_deg * Math.PI) / 180;
-      ctx.strokeStyle = "rgba(255, 179, 71, .95)";
+      ctx.strokeStyle = waypointColor;
       ctx.lineWidth = 1.6;
       ctx.beginPath();
       ctx.moveTo(0, 0);
@@ -1225,7 +1382,7 @@ function drawWaypoints() {
       ctx.stroke();
       ctx.beginPath();
       ctx.arc(Math.cos(rad) * 30, -Math.sin(rad) * 30, 2.2, 0, Math.PI * 2);
-      ctx.fillStyle = "rgba(255, 179, 71, .95)";
+      ctx.fillStyle = waypointColor;
       ctx.fill();
     }
     ctx.rotate(Math.PI / 4);
@@ -1234,7 +1391,7 @@ function drawWaypoints() {
     ctx.lineWidth = 3.5;
     ctx.strokeRect(-5.5, -5.5, 11, 11);
     ctx.globalAlpha = 0.95;
-    ctx.strokeStyle = hasAngle ? "#ffb347" : app.colors.path;
+    ctx.strokeStyle = hasAngle ? waypointColor : app.colors.path;
     ctx.lineWidth = 1.5;
     ctx.strokeRect(-5, -5, 10, 10);
     ctx.restore();
@@ -1329,7 +1486,7 @@ function drawRobot() {
     ctx.fillStyle = "rgba(231, 76, 60, .45)"; // the body fault stays visible
     ctx.fill();
   }
-  ctx.strokeStyle = faulted ? "#ff6b4a" : "#0b0f14";
+  ctx.strokeStyle = faulted ? "#ff6b4a" : themeOutline();
   ctx.lineWidth = 2;
   ctx.stroke();
   // front-of-travel chevron, INSIDE the body outline
@@ -1503,8 +1660,9 @@ function drawPoseDraft() {
   if (!app.poseDraft) return;
   const { x, y, theta } = app.poseDraft;
   const [sx, sy] = worldToScreen(x, y);
+  const draftColor = app.colors.draft || COLOR_DEFAULTS.draft;
   ctx.save();
-  ctx.strokeStyle = "#f5a623";
+  ctx.strokeStyle = draftColor;
   ctx.lineWidth = 2;
   ctx.setLineDash([5, 4]);
   ctx.beginPath();
@@ -1543,11 +1701,11 @@ function drawPoseDraft() {
       ctx.arcTo(l, t, l + w, t, r);
       ctx.closePath();
     }
-    ctx.fillStyle = "rgba(14, 17, 22, .88)";
+    ctx.fillStyle = "rgba(10, 10, 10, .90)";
     ctx.fill();
-    ctx.strokeStyle = "#f5a623";
+    ctx.strokeStyle = draftColor;
     ctx.stroke();
-    ctx.fillStyle = "#ffcf7d";
+    ctx.fillStyle = draftColor;
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
     ctx.fillText(label, bx, by);
@@ -1585,14 +1743,27 @@ canvas.addEventListener("pointerdown", (event) => {
   // clicking a waypoint opens its editor: position + arrival angle
   const wpIndex = hitWaypoint(wx, wy);
   if (wpIndex >= 0 && app.tool !== "pan" && app.tool !== "erase") {
+    closeGoalPopup();
     openWaypointPopup(wpIndex);
     return;
   }
   closeWaypointPopup();
 
+  // clicking the goal opens its editor with position + arrival heading
+  let goalClick = false;
+  if (app.tool !== "erase" && app.tool !== "goal" && hitGoal(wx, wy)) {
+    if (app.tool !== "pan") {
+      openGoalPopup();
+      return;
+    }
+    goalClick = true;
+  } else {
+    closeGoalPopup();
+  }
+
   switch (app.tool) {
     case "pan":
-      app.drag = { mode: "pan", start: [sx, sy], view: { ...app.view } };
+      app.drag = { mode: "pan", start: [sx, sy], view: { ...app.view }, goalClick };
       break;
     case "draw": {
       const anchor = snapAnchor();
@@ -1761,6 +1932,7 @@ canvas.addEventListener("pointermove", (event) => {
       const dy = (sy - app.drag.start[1]) / app.view.zoom;
       app.view.x = app.drag.view.x - dx;
       app.view.y = app.drag.view.y + dy;
+      if (goalPopupOpen()) layoutGoalPopup();
       break;
     }
     case "draw": {
@@ -1834,8 +2006,11 @@ canvas.addEventListener("pointerup", (event) => {
     }
     return;
   }
+  if (drag.mode === "pan" && drag.goalClick) {
+    const [sx, sy] = eventPos(event);
+    if (Math.hypot(sx - drag.start[0], sy - drag.start[1]) < 4) openGoalPopup();
+  }
   if (drag.mode === "draw") {
-    // the release point is part of the path even without a final move event
     const [sx, sy] = eventPos(event);
     const [rx, ry] = clampToLegal(...clampToField(...screenToWorld(sx, sy)));
     const last = drag.stroke[drag.stroke.length - 1];
@@ -1890,6 +2065,7 @@ canvas.addEventListener("pointerup", (event) => {
     const aim = app.goal.theta === null || app.goal.theta === undefined ? "" : `, arrival theta ${app.goal.theta.toFixed(0)} deg`;
     logLine("info", `goal set to (${app.goal.x.toFixed(0)}, ${app.goal.y.toFixed(0)}) mm${aim}`);
     goalChanged();
+    openGoalPopup();
   }
 });
 
@@ -1902,6 +2078,7 @@ canvas.addEventListener("wheel", (event) => {
   const [nx, ny] = screenToWorld(sx, sy);
   app.view.x += wx - nx;
   app.view.y += wy - ny;
+  if (goalPopupOpen()) layoutGoalPopup();
 }, { passive: false });
 
 window.addEventListener("keydown", (event) => {
@@ -1975,7 +2152,7 @@ const TOOL_HINTS = {
   pan: "Drag to pan - wheel zooms. The dashed squares are the opponent robots (reported as camera obstacles - count & positions in Config) - grab them anytime, also while your robot drives.",
   pose: "Place the robot by hand: click where it stands, then drag away from the point to aim the heading - the angle follows your cursor on the map. A popup next to the point lets you type X / Y / theta, then Validate (the robot does not move - you only tell the system where it is).",
   draw: "Draw a path - the start snaps to the robot position or the previous path end within 250 mm.",
-  goal: "Click to place the goal, then DRAG away from it to aim the arrival heading theta (the last node arrives on that angle). The numeric theta box in the Mission card edits it too.",
+  goal: "Click to place the goal, then DRAG away from it to aim the arrival heading theta (the last node arrives on that angle). A popup opens so you can fine-tune X, Y and theta; click an existing goal to edit it.",
   waypoint: "Click near a drawn path: the waypoint snaps onto its nearest point and the path is split there. Click away from any path to add a free one. Click an EXISTING waypoint to edit its coordinates and the arrival angle (with the option to weave the turn into the approach). The path sweeps smoothly through pass-through waypoints (within ~5 cm); a waypoint carrying an arrival angle is passed exactly.",
   rect: "Drag a rectangle STATIC obstacle. Set boxes before running: while the robot executes this tool is locked (drag the opponent robots for moving obstacles).",
   circle: "Drag out a circular STATIC zone. Locked while the robot executes, like the box.",
@@ -2047,6 +2224,7 @@ function activateTool(name) {
   const wasMeasure = app.tool === "ruler" || app.tool === "angle";
   app.tool = name;
   if (!PARAM_TOOLS.has(name)) hideToolParams();
+  if (name === "erase" || name === "draw") closeGoalPopup();
   if (wasMeasure && name !== "ruler" && name !== "angle") {
     // leaving the ruler/angle: their traces must not linger on the map
     app.measure = { kind: app.measure.kind, points: [] };
@@ -2339,8 +2517,16 @@ el("btn-estop").addEventListener("click", async () => {
 el("btn-clear").addEventListener("click", async () => {
   try { await api("/clear_faults", "POST"); } catch (error) { logLine("warn", error.message); }
 });
-el("btn-release").addEventListener("click", releaseMotorsNow);
-el("btn-release-now").addEventListener("click", releaseMotorsNow);
+el("btn-release").addEventListener("click", (event) => releaseMotorsNow(event.currentTarget));
+el("btn-release-now").addEventListener("click", (event) => releaseMotorsNow(event.currentTarget));
+el("release-confirm-yes").addEventListener("click", () => settleReleaseConfirm(true));
+el("release-confirm-no").addEventListener("click", () => settleReleaseConfirm(false));
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && releaseConfirmSettle) {
+    event.preventDefault();
+    settleReleaseConfirm(false);
+  }
+});
 
 el("btn-add-release").addEventListener("click", () => {
   pushHistory();
@@ -2839,6 +3025,12 @@ function clampToSafe(wx, wy) {
 // ------------------------------------------------- waypoint editor popup --
 let wpPopupIndex = -1;
 
+/** Is the goal marker under a world point (screen tolerance ~14 px)? */
+function hitGoal(wx, wy) {
+  if (!app.goal) return false;
+  return Math.hypot(wx - app.goal.x, wy - app.goal.y) <= 14 / Math.max(0.05, app.view.zoom);
+}
+
 /** Index of the waypoint under a world point (screen tolerance ~12 px). */
 function hitWaypoint(wx, wy) {
   const tolerance = 12 / Math.max(0.05, app.view.zoom);
@@ -2930,7 +3122,91 @@ el("wp-cancel").addEventListener("click", () => closeWaypointPopup());
 
 document.addEventListener("keydown", (event) => {
   if (event.key === "Escape" && !el("wp-popup").classList.contains("hidden")) {
+    event.stopPropagation();
     closeWaypointPopup();
+  }
+});
+
+// ------------------------------------------------------ goal editor popup --
+let goalPopupReturnFocus = null;
+
+function syncGoalPopupFields() {
+  if (!app.goal) return;
+  el("goal-x").value = String(Math.round(app.goal.x));
+  el("goal-y").value = String(Math.round(app.goal.y));
+  const hasAngle = app.goal.theta !== null && app.goal.theta !== undefined;
+  el("goal-th").value = hasAngle ? String(Math.round(app.goal.theta)) : "";
+}
+
+function layoutGoalPopup() {
+  const popup = el("goal-popup");
+  const [sx, sy] = worldToScreen(app.goal.x, app.goal.y);
+  const { w, h } = cssSize();
+  popup.classList.remove("hidden");
+  popup.style.left = `${clamp(sx + 18, 8, Math.max(8, w - 210))}px`;
+  popup.style.top = `${clamp(sy - 20, 8, Math.max(8, h - 200))}px`;
+}
+
+function goalPopupOpen() {
+  return Boolean(app.goal) && !el("goal-popup").classList.contains("hidden");
+}
+
+function openGoalPopup() {
+  if (!app.goal) return;
+  goalPopupReturnFocus = document.activeElement;
+  syncGoalPopupFields();
+  layoutGoalPopup();
+  el("goal-x").focus();
+  el("goal-x").select();
+}
+
+function closeGoalPopup(restoreFocus = false) {
+  el("goal-popup").classList.add("hidden");
+  if (restoreFocus && goalPopupReturnFocus && goalPopupReturnFocus.focus) {
+    goalPopupReturnFocus.focus();
+  }
+  goalPopupReturnFocus = null;
+}
+
+function applyGoalPopup() {
+  if (!app.goal) return;
+  const x = Number.parseFloat(el("goal-x").value);
+  const y = Number.parseFloat(el("goal-y").value);
+  const thetaDeg = Number.parseFloat(el("goal-th").value);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+  pushHistory();
+  app.goal.x = x;
+  app.goal.y = y;
+  app.goal.theta = Number.isFinite(thetaDeg) ? clamp(norm180(thetaDeg), -180, 180) : null;
+  ghostRefresh();
+  goalChanged();
+  renderSequence();
+  closeGoalPopup();
+  logLine("info", `goal set → (${x.toFixed(0)}, ${y.toFixed(0)})`);
+}
+
+el("goal-apply").addEventListener("click", applyGoalPopup);
+el("goal-delete").addEventListener("click", () => {
+  if (!app.goal) return;
+  pushHistory();
+  app.goal = null;
+  ghostRefresh();
+  goalChanged();
+  closeGoalPopup();
+  logLine("info", "goal removed");
+});
+el("goal-cancel").addEventListener("click", () => closeGoalPopup(true));
+el("goal-popup").addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    applyGoalPopup();
+  }
+});
+
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !el("goal-popup").classList.contains("hidden")) {
+    event.stopPropagation();
+    closeGoalPopup(true);
   }
 });
 
@@ -2966,11 +3242,12 @@ function measureAngle(points) {
 }
 
 function measureLabel(x, y, text) {
+  const measureColor = app.colors.measure || COLOR_DEFAULTS.measure;
   ctx.save();
   ctx.font = "bold 12px 'Segoe UI', sans-serif";
   const width = ctx.measureText(text).width;
-  ctx.fillStyle = "rgba(10, 16, 22, .82)";
-  ctx.strokeStyle = "rgba(62, 201, 214, .8)";
+  ctx.fillStyle = "rgba(8, 8, 8, .85)";
+  ctx.strokeStyle = hexToRgba(measureColor, .8);
   ctx.lineWidth = 1;
   const left = x - width / 2 - 6;
   const top = y - 10;
@@ -2978,7 +3255,7 @@ function measureLabel(x, y, text) {
   ctx.roundRect(left, top, width + 12, 20, 5);
   ctx.fill();
   ctx.stroke();
-  ctx.fillStyle = "#8fe8f2";
+  ctx.fillStyle = measureColor;
   ctx.textAlign = "left";
   ctx.textBaseline = "middle";
   ctx.fillText(text, left + 6, top + 10);
@@ -2988,7 +3265,7 @@ function measureLabel(x, y, text) {
 function measureMarker(x, y) {
   ctx.beginPath();
   ctx.arc(x, y, 4, 0, Math.PI * 2);
-  ctx.fillStyle = "rgba(62, 201, 214, .95)";
+  ctx.fillStyle = hexToRgba(app.colors.measure || COLOR_DEFAULTS.measure, .95);
   ctx.fill();
   ctx.beginPath();
   ctx.arc(x, y, 7, 0, Math.PI * 2);
@@ -3004,7 +3281,7 @@ function drawMeasure() {
   const points = measure.points;
   const screen = points.map(([x, y]) => worldToScreen(x, y));
   ctx.save();
-  ctx.strokeStyle = "rgba(62, 201, 214, .9)";
+  ctx.strokeStyle = hexToRgba(app.colors.measure || COLOR_DEFAULTS.measure, .9);
   ctx.lineWidth = 1.6;
   ctx.setLineDash([7, 5]);
   if (measure.kind === "ruler") {
@@ -3247,6 +3524,18 @@ function seqSpeedInput(item) {
   return wrap;
 }
 
+/** One labeled axis of a waypoint (X / Y). Keeping each axis in its own
+ *  inline box lets narrow panels wrap cleanly between X and Y. */
+function seqAxisField(labelText, value, stepValue, title, apply) {
+  const field = document.createElement("span");
+  field.className = "seq-axis";
+  const label = document.createElement("span");
+  label.className = "seq-axis-label";
+  label.textContent = labelText;
+  field.append(label, seqNumberInput(value, stepValue, title, apply));
+  return field;
+}
+
 function buildSeqEditor(desc, item, index) {
   if (item.kind === "rotate") {
     desc.append("CCW ");
@@ -3274,8 +3563,7 @@ function buildSeqEditor(desc, item, index) {
     return;
   }
   if (item.kind === "waypoint") {
-    desc.append(" (");
-    desc.appendChild(seqNumberInput(Math.round(item.x), 10, "waypoint X (mm)", (value) => {
+    desc.appendChild(seqAxisField("X", Math.round(item.x), 10, "waypoint X (mm)", (value) => {
       pushHistory();
       const [nx, ny] = clampToWaypointSafe(value, item.y);
       item.x = nx;
@@ -3283,8 +3571,7 @@ function buildSeqEditor(desc, item, index) {
       invalidatePlan();
       ghostRefresh();
     }));
-    desc.append(", ");
-    desc.appendChild(seqNumberInput(Math.round(item.y), 10, "waypoint Y (mm)", (value) => {
+    desc.appendChild(seqAxisField("Y", Math.round(item.y), 10, "waypoint Y (mm)", (value) => {
       pushHistory();
       const [nx, ny] = clampToWaypointSafe(item.x, value);
       item.x = nx;
@@ -3292,7 +3579,6 @@ function buildSeqEditor(desc, item, index) {
       invalidatePlan();
       ghostRefresh();
     }));
-    desc.append(")");
     desc.appendChild(seqSpeedInput(item));
     return;
   }
@@ -3310,34 +3596,16 @@ function buildSeqEditor(desc, item, index) {
   desc.textContent = itemDescription(item);
 }
 
-// ------------------------------------------------------ goal heading UI ---
+// ------------------------------------------------------ goal editor state --
 function syncGoalUI() {
-  const input = el("goal-theta");
-  const has = Boolean(app.goal && app.goal.theta !== null && app.goal.theta !== undefined);
-  input.disabled = !app.goal;
-  input.value = has ? String(Math.round(app.goal.theta)) : "";
-  input.placeholder = app.goal ? "drag to aim" : "no goal";
-}
-
-el("goal-theta").addEventListener("change", () => {
-  if (!app.goal) return;
-  const value = Number(el("goal-theta").value);
-  if (!Number.isFinite(value)) {
-    syncGoalUI();
-    return;
+  const popup = el("goal-popup");
+  if (!app.goal) {
+    popup.classList.add("hidden");
+  } else if (!popup.classList.contains("hidden")) {
+    syncGoalPopupFields();
+    layoutGoalPopup();
   }
-  app.goal.theta = clamp(norm180(value), -180, 180);
-  ghostRefresh();
-  goalChanged();
-});
-
-el("btn-goal-clear").addEventListener("click", () => {
-  app.goal = null;
-  ghostRefresh();
-  syncGoalUI();
-  goalChanged();
-});
-syncGoalUI();
+}
 
 function renderSequence() {
   els.seqList.innerHTML = "";
@@ -3357,6 +3625,8 @@ function renderSequence() {
     const desc = document.createElement("span");
     desc.className = "desc";
     buildSeqEditor(desc, item, index);
+    const tools = document.createElement("span");
+    tools.className = "seq-tools";
     const up = document.createElement("button");
     up.className = "move";
     up.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5.5 14.5 12 8l6.5 6.5"/></svg>';
@@ -3379,7 +3649,8 @@ function renderSequence() {
       renderSequence();
       logLine("info", `step ${index + 1} deleted`);
     });
-    row.append(idx, desc, up, del);
+    tools.append(up, del);
+    row.append(idx, desc, tools);
     els.seqList.appendChild(row);
   });
   ghostRefresh();
@@ -4689,15 +4960,35 @@ syncPhotoPreview("opponent-photo", app.opponentPhoto);
 updateRobotsInfo();
 
 // ------------------------------------------------------------ colours -----
-const COLOR_INPUTS = { "color-stroke": "stroke", "color-path": "path", "color-ref": "ref", "color-robot": "robot", "color-actions": "actions" };
+const COLOR_INPUTS = {
+  "color-stroke": "stroke", "color-path": "path", "color-ref": "ref",
+  "color-actions": "actions", "color-waypoint": "waypoint",
+  "color-robot": "robot", "color-opponent": "opponent",
+  "color-obstacle": "obstacle", "color-goal": "goal",
+  "color-measure": "measure", "color-draft": "draft",
+};
+
+function colorHexLabel(id, value) {
+  const label = document.querySelector(`.color-hex[data-hex="${id}"]`);
+  if (label) label.textContent = String(value).toUpperCase();
+}
 
 function syncColorInputs() {
-  Object.entries(COLOR_INPUTS).forEach(([id, key]) => { el(id).value = app.colors[key]; });
+  Object.entries(COLOR_INPUTS).forEach(([id, key]) => {
+    const input = el(id);
+    if (!input) return;
+    const value = app.colors[key] || COLOR_DEFAULTS[key];
+    input.value = value;
+    colorHexLabel(id, value);
+  });
 }
 
 Object.entries(COLOR_INPUTS).forEach(([id, key]) => {
-  el(id).addEventListener("input", () => {
-    app.colors[key] = el(id).value;
+  const input = el(id);
+  if (!input) return;
+  input.addEventListener("input", () => {
+    app.colors[key] = input.value;
+    colorHexLabel(id, input.value);
     saveColors();
   });
 });
@@ -4706,9 +4997,63 @@ el("btn-colors-reset").addEventListener("click", () => {
   app.colors = { ...COLOR_DEFAULTS };
   saveColors();
   syncColorInputs();
-  logLine("info", "display colours reset");
+  logLine("info", "map colours reset to the defaults");
 });
 syncColorInputs();
+
+// -------------------------------------------------------------- theme -----
+const THEME_ICONS = {
+  // the header button shows the mode you switch TO
+  moon: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.2 14.4A8.2 8.2 0 0 1 9.6 3.8a8.2 8.2 0 1 0 10.6 10.6z"/></svg>',
+  sun: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.2 5.2l1.6 1.6M17.2 17.2l1.6 1.6M18.8 5.2l-1.6 1.6M6.8 17.2l-1.6 1.6"/></svg>',
+};
+const themeMedia = window.matchMedia ? window.matchMedia("(prefers-color-scheme: dark)") : null;
+
+function effectiveTheme(mode) {
+  if (mode !== "system") return mode === "dark" ? "dark" : "light";
+  return themeMedia && themeMedia.matches ? "dark" : "light";
+}
+
+/** Applies a theme to the document and top-bar/dock controls. The canvas
+ *  reads data-theme on every frame, so no explicit redraw is needed. */
+function applyTheme(mode, { persist = true } = {}) {
+  app.theme = THEME_CHOICES.includes(mode) ? mode : "light";
+  const effective = effectiveTheme(app.theme);
+  document.documentElement.dataset.theme = effective;
+  if (persist) {
+    try { localStorage.setItem(THEME_KEY, app.theme); } catch (error) { /* private mode */ }
+  }
+  const dark = effective === "dark";
+  const button = el("btn-theme");
+  if (button) {
+    button.innerHTML = dark ? THEME_ICONS.sun : THEME_ICONS.moon;
+    const hint = dark ? "Switch to light mode" : "Switch to dark mode";
+    button.title = hint;
+    button.setAttribute("aria-label", hint);
+    button.setAttribute("aria-pressed", dark ? "true" : "false");
+    button.classList.toggle("active", dark);
+  }
+  document.querySelectorAll("[data-theme-choice]").forEach((choice) => {
+    const active = choice.dataset.themeChoice === app.theme;
+    choice.classList.toggle("active", active);
+    choice.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+}
+
+document.querySelectorAll("[data-theme-choice]").forEach((choice) => {
+  choice.addEventListener("click", () => applyTheme(choice.dataset.themeChoice));
+});
+if (el("btn-theme")) {
+  el("btn-theme").addEventListener("click", () => applyTheme(isDarkTheme() ? "light" : "dark"));
+}
+if (themeMedia) {
+  const onSchemeChange = () => {
+    if (app.theme === "system") applyTheme("system", { persist: false });
+  };
+  if (themeMedia.addEventListener) themeMedia.addEventListener("change", onSchemeChange);
+  else if (themeMedia.addListener) themeMedia.addListener(onSchemeChange);
+}
+applyTheme(app.theme, { persist: false });
 
 // ------------------------------------------------------------------- init --
 async function loadBackground() {

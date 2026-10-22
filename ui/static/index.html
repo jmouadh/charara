@@ -4,9 +4,18 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>Charara - Field Console</title>
+  <script>
+    // Apply the saved theme before the first paint (no light flash on reload).
+    try {
+      var mode = localStorage.getItem("charara.theme") || "light";
+      var dark = mode === "dark" || (mode === "system" &&
+        window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+      document.documentElement.dataset.theme = dark ? "dark" : "light";
+    } catch (error) { document.documentElement.dataset.theme = "light"; }
+  </script>
   <link rel="icon" type="image/png" sizes="192x192" href="logo/charara-mark.png"/>
   <link rel="apple-touch-icon" href="logo/charara-mark.png"/>
-  <link rel="stylesheet" href="css/style.css?v=63"/>
+  <link rel="stylesheet" href="css/style.css?v=74"/>
 </head>
 <body>
   <header>
@@ -24,21 +33,25 @@
         <option value="blue">BLUE</option>
       </select>
     </div>
-    <div class="header-right">
-      <div class="pills">
-        <span id="camera-pill" class="pill icon" data-tip="Camera / vision channel - state appears with telemetry" role="img" aria-label="Camera channel status">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.8 12h3.6a1 1 0 0 1 .9 1.45l-2 4.07a1 1 0 0 1-1.71.13l-2.12-2.97"/><path d="M17.1 9.05a1 1 0 0 1 .45 1.34l-3.1 6.21a1 1 0 0 1-1.35.45L3.6 12.3a2.92 2.92 0 0 1-1.3-3.91L3.7 5.6a2.92 2.92 0 0 1 3.92-1.3z"/><path d="M2 19h3.76a2 2 0 0 0 1.8-1.1L9 15"/><path d="M2 21v-4"/><path d="M7 9h.01"/></svg>
-        </span>
-        <span id="imu-pill" class="pill" data-tip="IMU status - state appears with telemetry" aria-label="IMU status">IMU</span>
-        <select id="mode-select" class="mode-select" disabled
-                title="Robot link - REAL talks to the board over I2C, MOCK simulates every answer. Switching is refused while a path is executing.">
-          <option value="i2c">REAL</option>
-          <option value="mock">MOCK</option>
-        </select>
-        <span id="robot-pill" class="pill off" title="I2C link to the STM32">ROBOT</span>
-        <span id="state-pill" class="pill" title="Motion state">-</span>
-        <span id="exec-pill" class="pill hidden" title="Path execution">-</span>
-      </div>
+    <div class="status-group" role="group" aria-label="Robot status">
+      <span id="camera-pill" class="pill icon" data-tip="Camera / vision channel - state appears with telemetry" role="img" aria-label="Camera channel status">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.8 12h3.6a1 1 0 0 1 .9 1.45l-2 4.07a1 1 0 0 1-1.71.13l-2.12-2.97"/><path d="M17.1 9.05a1 1 0 0 1 .45 1.34l-3.1 6.21a1 1 0 0 1-1.35.45L3.6 12.3a2.92 2.92 0 0 1-1.3-3.91L3.7 5.6a2.92 2.92 0 0 1 3.92-1.3z"/><path d="M2 19h3.76a2 2 0 0 0 1.8-1.1L9 15"/><path d="M2 21v-4"/><path d="M7 9h.01"/></svg>
+      </span>
+      <span id="imu-pill" class="pill" data-tip="IMU status - state appears with telemetry" aria-label="IMU status">IMU</span>
+      <select id="mode-select" class="mode-select" disabled
+              title="Robot link - REAL talks to the board over I2C, MOCK simulates every answer. Switching is refused while a path is executing.">
+        <option value="i2c">REAL</option>
+        <option value="mock">MOCK</option>
+      </select>
+      <span id="robot-pill" class="pill off" title="I2C link to the STM32">ROBOT</span>
+      <span id="state-pill" class="pill" title="Motion state">-</span>
+      <span id="exec-pill" class="pill hidden" title="Path execution">-</span>
+    </div>
+
+    <div class="header-actions">
+      <button id="btn-theme" class="icon-btn theme-toggle" type="button" title="Switch to dark mode" aria-label="Switch to dark mode" aria-pressed="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.2 14.4A8.2 8.2 0 0 1 9.6 3.8a8.2 8.2 0 1 0 10.6 10.6z"/></svg>
+      </button>
       <button id="btn-fullscreen" class="icon-btn fullscreen" type="button" title="Enter full screen">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H4v5"/><path d="M15 4h5v5"/><path d="M15 20h5v-5"/><path d="M9 20H4v-5"/></svg>
       </button>
@@ -121,7 +134,7 @@
         <div id="tool-params" class="tool-params hidden">
           <div class="tp-head">
             <span id="tool-params-title">Delay</span>
-            <button id="tool-params-close" class="tp-close" type="button" title="Close (Esc)">×</button>
+            <button id="tool-params-close" class="tp-close" type="button" title="Close (Esc)">Ã—</button>
           </div>
           <div id="tp-pause" class="tp-group hidden">
             <label class="tp-field">Delay
@@ -194,17 +207,6 @@
       <section class="card">
         <h3>Mission</h3>
         <div class="m-group">
-          <div class="m-label">Target</div>
-          <div class="row m-target">
-            <label>Goal theta <input id="goal-theta" type="number" step="5" min="-180" max="180" placeholder="drag to aim"/></label>
-            <span class="unit">deg</span>
-            <button id="btn-goal-clear" class="ghost m-btn" title="Remove the goal from the map">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
-              <span>Clear</span>
-            </button>
-          </div>
-        </div>
-        <div class="m-group">
           <div class="m-label">Prepare &amp; run</div>
           <div class="grid2">
             <button id="btn-plan" class="primary m-btn">
@@ -252,6 +254,16 @@
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 11V8a5 5 0 0 1 9.6-2"/><path d="M17 13v3a5 5 0 0 1-9.6 2"/><rect x="4.5" y="10.5" width="5" height="4" rx="1"/><rect x="14.5" y="10.5" width="5" height="4" rx="1"/></svg>
               <span>Release motors</span>
             </button>
+          </div>
+          <div id="release-confirm" class="inline-confirm hidden" role="alertdialog"
+               aria-labelledby="release-confirm-title" aria-describedby="release-confirm-text">
+            <div class="ic-head" id="release-confirm-title">Release motors?</div>
+            <p class="ic-text" id="release-confirm-text">The drivers turn off (freewheel) while the robot stands still.
+              The next move re-energizes them automatically.</p>
+            <div class="ic-actions">
+              <button id="release-confirm-yes" class="primary" type="button">Release</button>
+              <button id="release-confirm-no" class="ghost" type="button">Cancel</button>
+            </div>
           </div>
         </div>
         <div class="stats" id="plan-stats">No plan yet - draw a path (or a goal) and press Plan.</div>
@@ -340,7 +352,7 @@
             </button>
             <button id="pad-turn-ccw" class="pad-btn left" title="Turn left (CCW) by the angle">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.7 9.7 0 0 0-6.7 2.7L3 8"/><path d="M3 3v5h5"/></svg>
-              <span class="pad-cap">+90°</span>
+              <span class="pad-cap">+90Â°</span>
             </button>
             <button id="pad-back" class="pad-btn down" title="Drive backward by the distance">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v15"/><path d="M6 13l6 6 6-6"/></svg>
@@ -348,7 +360,7 @@
             </button>
             <button id="pad-turn-cw" class="pad-btn right" title="Turn right (CW) by the angle">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-9-9 9.7 9.7 0 0 1 6.7 2.7L21 8"/><path d="M21 3v5h-5"/></svg>
-              <span class="pad-cap">-90°</span>
+              <span class="pad-cap">-90Â°</span>
             </button>
           </div>
           <div class="pad-arcs">
@@ -370,6 +382,14 @@
         <span class="ver" title="STM32 board firmware version">FW <b id="fw-version">-</b></span>
       </footer>
     </aside>
+
+    <div id="panel-resizer" class="panel-resizer" role="separator" aria-orientation="vertical"
+         aria-label="Resize the mission panel" aria-valuemin="250" aria-valuemax="620" tabindex="0"
+         title="Drag to resize the mission panel - double-click to reset">
+      <span class="panel-resizer-grip" aria-hidden="true">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6.2 4 2.5 8l3.7 4"/><path d="M9.8 4l3.7 4-3.7 4"/></svg>
+      </span>
+    </div>
 
     <section id="viewport">
       <div id="stage">
@@ -403,6 +423,17 @@
             <button id="wp-apply" class="primary">Apply</button>
             <button id="wp-delete" class="ghost" title="Remove this waypoint"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 7h15"/><path d="M9.5 7V4.8h5V7"/><path d="M6.3 7l1 12.6h9.4L17.7 7"/><path d="M10.2 10.5v6M13.8 10.5v6"/></svg></button>
             <button id="wp-cancel" class="ghost" title="Close (Esc)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+          </div>
+        </div>
+        <div id="goal-popup" class="pose-popup goal-popup hidden">
+          <div class="pp-head">Goal <span>- arrival heading</span></div>
+          <div class="pp-row"><label for="goal-x">X</label><input id="goal-x" type="number" step="10"/><span class="u">mm</span></div>
+          <div class="pp-row"><label for="goal-y">Y</label><input id="goal-y" type="number" step="10"/><span class="u">mm</span></div>
+          <div class="pp-row"><label for="goal-th">theta</label><input id="goal-th" type="number" step="5" min="-180" max="180" placeholder="none"/><span class="u">deg</span></div>
+          <div class="pp-actions">
+            <button id="goal-apply" class="primary">Apply</button>
+            <button id="goal-delete" class="ghost" title="Remove the goal"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 7h15"/><path d="M9.5 7V4.8h5V7"/><path d="M6.3 7l1 12.6h9.4L17.7 7"/><path d="M10.2 10.5v6M13.8 10.5v6"/></svg></button>
+            <button id="goal-cancel" class="ghost" title="Close (Esc)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
           </div>
         </div>
         <div id="telemetry" class="overlay telemetry">
@@ -607,19 +638,50 @@
 
       <div class="settings-page hidden" id="settings-ui" role="tabpanel" aria-labelledby="settings-tab-ui" hidden>
       <section class="card">
-        <h3>Display <small>- map colours</small></h3>
+        <h3>Appearance <small>- interface theme</small></h3>
+        <div class="theme-seg" role="group" aria-label="Interface theme">
+          <button class="theme-choice" type="button" data-theme-choice="light" title="Bright interface for daylight use">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.2M12 19.3v2.2M2.5 12h2.2M19.3 12h2.2M5.2 5.2l1.6 1.6M17.2 17.2l1.6 1.6M18.8 5.2l-1.6 1.6M6.8 17.2l-1.6 1.6"/></svg>
+            <span>Light</span>
+          </button>
+          <button class="theme-choice" type="button" data-theme-choice="dark" title="Night interface - dims the table artwork and every panel">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.2 14.4A8.2 8.2 0 0 1 9.6 3.8a8.2 8.2 0 1 0 10.6 10.6z"/></svg>
+            <span>Dark</span>
+          </button>
+          <button class="theme-choice" type="button" data-theme-choice="system" title="Follow the operating system appearance">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4.5" width="18" height="12" rx="2"/><path d="M8 20.5h8M12 16.5v4"/></svg>
+            <span>System</span>
+          </button>
+        </div>
+        <p class="hint">The theme is remembered in this browser. Map colours stay as you set them.</p>
+      </section>
+
+      <section class="card">
+        <h3>Map colours <small>- every layer</small></h3>
         <div class="m-group">
-          <div class="m-label">Layers</div>
-          <label class="color-row">Drawn path <input id="color-stroke" type="color" value="#ffd166"/></label>
-          <label class="color-row">Planned path <input id="color-path" type="color" value="#38d3ff"/></label>
-          <label class="color-row">Reference <input id="color-ref" type="color" value="#9aa7b5"/></label>
-          <label class="color-row">Robot <input id="color-robot" type="color" value="#4da3ff"/></label>
-          <label class="color-row">Turns &amp; pauses <input id="color-actions" type="color" value="#f5a623"/></label>
+          <div class="m-label">Paths &amp; markers</div>
+          <label class="color-row"><span>Drawn path</span><span class="color-pick"><input id="color-stroke" type="color" value="#e03434"/><span class="color-hex" data-hex="color-stroke">#E03434</span></span></label>
+          <label class="color-row"><span>Planned path</span><span class="color-pick"><input id="color-path" type="color" value="#e2528c"/><span class="color-hex" data-hex="color-path">#E2528C</span></span></label>
+          <label class="color-row"><span>Reference</span><span class="color-pick"><input id="color-ref" type="color" value="#9b9188"/><span class="color-hex" data-hex="color-ref">#9B9188</span></span></label>
+          <label class="color-row"><span>Turns &amp; pauses</span><span class="color-pick"><input id="color-actions" type="color" value="#a02a3f"/><span class="color-hex" data-hex="color-actions">#A02A3F</span></span></label>
+          <label class="color-row"><span>Waypoints</span><span class="color-pick"><input id="color-waypoint" type="color" value="#ffb347"/><span class="color-hex" data-hex="color-waypoint">#FFB347</span></span></label>
+        </div>
+        <div class="m-group">
+          <div class="m-label">Robots &amp; objects</div>
+          <label class="color-row"><span>Our robot</span><span class="color-pick"><input id="color-robot" type="color" value="#2e7d52"/><span class="color-hex" data-hex="color-robot">#2E7D52</span></span></label>
+          <label class="color-row"><span>Other robots</span><span class="color-pick"><input id="color-opponent" type="color" value="#ff6b4a"/><span class="color-hex" data-hex="color-opponent">#FF6B4A</span></span></label>
+          <label class="color-row"><span>Obstacles</span><span class="color-pick"><input id="color-obstacle" type="color" value="#e74c3c"/><span class="color-hex" data-hex="color-obstacle">#E74C3C</span></span></label>
+          <label class="color-row"><span>Goal</span><span class="color-pick"><input id="color-goal" type="color" value="#2ecc71"/><span class="color-hex" data-hex="color-goal">#2ECC71</span></span></label>
+        </div>
+        <div class="m-group">
+          <div class="m-label">Tools</div>
+          <label class="color-row"><span>Ruler &amp; angle</span><span class="color-pick"><input id="color-measure" type="color" value="#3ec9d6"/><span class="color-hex" data-hex="color-measure">#3EC9D6</span></span></label>
+          <label class="color-row"><span>Pose marker</span><span class="color-pick"><input id="color-draft" type="color" value="#f5a623"/><span class="color-hex" data-hex="color-draft">#F5A623</span></span></label>
         </div>
         <div class="row">
-          <button id="btn-colors-reset" class="ghost m-btn" title="Restore the default palette">
+          <button id="btn-colors-reset" class="ghost m-btn wide" title="Restore the default palette">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3"/><path d="M4.5 5v4h4"/></svg>
-            <span>Reset colours</span>
+            <span>Reset all colours</span>
           </button>
         </div>
       </section>
@@ -870,6 +932,6 @@
     </aside>
   </main>
 
-  <script src="js/app.js?v=63"></script>
+  <script src="js/app.js?v=74"></script>
 </body>
 </html>
