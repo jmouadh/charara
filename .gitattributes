@@ -24,3 +24,12 @@
 *.png binary
 *.jpg binary
 *.jpeg binary
+
+# GitHub language stats (Linguist): the ST HAL / CMSIS tree under Drivers/ is
+# vendor code downloaded from ST, and the EWARM startup file is CubeMX
+# generated. Neither says anything about the shape of this project, so keep
+# them out of the language bar. The custom drivers next to them
+# (STEPPERS_/ENCODERS_/OLED_MouadhJeridi) are ours and stay counted.
+STM32/Firmware/Drivers/CMSIS/** linguist-vendored
+STM32/Firmware/Drivers/STM32F7xx_HAL_Driver/** linguist-vendored
+STM32/Firmware/EWARM/startup_*.s linguist-generated
