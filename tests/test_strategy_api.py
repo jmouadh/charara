@@ -167,6 +167,36 @@ class StrategyApiTests(unittest.TestCase):
     def test_load_missing_strategy_is_404(self):
         self.assertEqual(self.client.post("/api/strategies/nope/load").status_code, 404)
 
+    def test_load_reports_geometry_warnings_by_leg(self):
+        """Issue #10: GET and load validate the drawing against the current table."""
+        body = {
+            "elements": [
+                {"kind": "stroke", "points": [[500.0, 500.0], [900.0, 500.0]]},
+                {"kind": "pause", "seconds": 0.5},
+                {"kind": "stroke", "points": [[1500.0, 500.0], [3400.0, 500.0]]},
+            ]
+        }
+        self.assertEqual(self.client.put("/api/strategies/off-table", json=body).status_code, 200)
+        loaded = self.client.get("/api/strategies/off-table").json()
+        self.assertTrue(
+            any("leg 2" in w and "outside the playfield" in w for w in loaded["warnings"]),
+            loaded["warnings"],
+        )
+        play = self.client.post("/api/strategies/off-table/load")
+        self.assertEqual(play.status_code, 200, play.text)
+        warnings = play.json()["warnings"]
+        self.assertTrue(
+            any("leg 2" in w and "outside the playfield" in w for w in warnings),
+            warnings,
+        )
+
+    def test_a_clean_document_loads_without_warnings(self):
+        """A drawing inside the field loads with an empty warning list."""
+        body = {"elements": [{"kind": "stroke", "points": [[500.0, 500.0], [900.0, 500.0]]}]}
+        self.assertEqual(self.client.put("/api/strategies/on-table", json=body).status_code, 200)
+        self.assertEqual(self.client.get("/api/strategies/on-table").json()["warnings"], [])
+        self.assertEqual(self.client.post("/api/strategies/on-table/load").json()["warnings"], [])
+
 
 if __name__ == "__main__":
     unittest.main()

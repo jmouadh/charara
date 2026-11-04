@@ -167,5 +167,126 @@ class StrategyApiTests(unittest.TestCase):
                 state.strategy_dir = previous
 
 
+class GeometryValidationTests(unittest.TestCase):
+    """Issue #10: a loaded mission reports the leg that leaves the playfield.
+
+    The report is advisory (an old strategy must stay loadable), but the leg
+    number has to match the sequence the operator authored: only motion
+    elements count, actions do not.
+    """
+
+    FIELD = {"width_mm": 3000.0, "height_mm": 2000.0}
+    OPTIONS = {
+        "robot_width_mm": 300.0,
+        "robot_height_mm": 300.0,
+        "obstacle_margin_mm": 150.0,
+        "waypoint_margin_mm": 0.0,
+    }
+
+    def _strategy(self, elements, start_pose=None) -> Strategy:
+        """Build a strategy document on the default 3000 x 2000 table."""
+        return Strategy(
+            name="geometry",
+            elements=list(elements),
+            options=dict(self.OPTIONS),
+            field=dict(self.FIELD),
+            start_pose=start_pose,
+        )
+
+    def test_a_clean_mission_has_no_warnings(self) -> None:
+        """A drawing well inside the field reports nothing."""
+        strategy = self._strategy(
+            [
+                {"kind": "stroke", "points": [[600.0, 600.0], [1200.0, 600.0]]},
+                {"kind": "pause", "seconds": 1.0},
+            ]
+        )
+        self.assertEqual(strategy.geometry_warnings(), [])
+
+    def test_an_out_of_field_point_names_its_leg(self) -> None:
+        """The second motion element is 'leg 2', actions do not shift the count."""
+        strategy = self._strategy(
+            [
+                {"kind": "stroke", "points": [[500.0, 500.0], [900.0, 500.0]]},
+                {"kind": "pause", "seconds": 1.0},
+                {"kind": "stroke", "points": [[1500.0, 500.0], [3400.0, 500.0]]},
+            ]
+        )
+        warnings = strategy.geometry_warnings()
+        self.assertTrue(
+            any("leg 2" in w and "outside the playfield" in w for w in warnings),
+            warnings,
+        )
+
+    def test_a_waypoint_leg_is_numbered_too(self) -> None:
+        """A waypoint outside the field names its leg and its kind."""
+        strategy = self._strategy(
+            [
+                {"kind": "stroke", "points": [[500.0, 500.0], [900.0, 500.0]]},
+                {"kind": "waypoint", "x": 500.0, "y": 2600.0},
+            ]
+        )
+        warnings = strategy.geometry_warnings()
+        self.assertTrue(
+            any("leg 2 (waypoint)" in w and "outside the playfield" in w for w in warnings),
+            warnings,
+        )
+
+    def test_a_leg_hugging_the_border_reports_the_body(self) -> None:
+        """A 300 mm body centred 100 mm from the edge sticks 50 mm out."""
+        strategy = self._strategy(
+            [{"kind": "stroke", "points": [[500.0, 100.0], [1500.0, 100.0]]}]
+        )
+        warnings = strategy.geometry_warnings()
+        self.assertTrue(
+            any("leg 1" in w and "field border" in w for w in warnings),
+            warnings,
+        )
+
+    def test_the_recorded_start_pose_is_validated(self) -> None:
+        """A start pose whose body hangs off the table is reported first."""
+        strategy = self._strategy(
+            [{"kind": "stroke", "points": [[600.0, 500.0], [900.0, 500.0]]}],
+            start_pose=[100.0, 500.0, 0.0],
+        )
+        warnings = strategy.geometry_warnings()
+        self.assertTrue(any("start pose" in w for w in warnings), warnings)
+        self.assertIn("start pose", warnings[0])
+
+    def test_the_current_table_overrides_the_recorded_one(self) -> None:
+        """The console validates against the table the robot is on now."""
+        strategy = self._strategy(
+            [{"kind": "stroke", "points": [[600.0, 600.0], [1500.0, 600.0]]}]
+        )
+        self.assertEqual(strategy.geometry_warnings(), [])
+        smaller = {"width_mm": 1000.0, "height_mm": 1000.0}
+        self.assertTrue(
+            any("leg 1" in w for w in strategy.geometry_warnings(smaller)),
+            strategy.geometry_warnings(smaller),
+        )
+
+    def test_a_bad_document_never_raises(self) -> None:
+        """Garbage geometry degrades to warnings, not to a crash."""
+        strategy = Strategy(
+            name="broken",
+            elements=[{"kind": "stroke", "points": [["x", "y"], None]}],
+            field={"width_mm": None, "height_mm": "wide"},
+        )
+        self.assertEqual(strategy.geometry_warnings(), [])
+
+    def test_a_start_zone_pose_flush_with_the_wall_is_not_a_warning(self) -> None:
+        """A body standing in its start zone touches the wall - that is normal.
+
+        A 300 mm body centred at x = 150 mm and turned by -0.4 deg pokes
+        about 1 mm through the wall; every real strategy looks like that, so
+        the report must tolerate a few millimetres or it would cry wolf.
+        """
+        strategy = self._strategy(
+            [{"kind": "waypoint", "x": 1300.0, "y": 1500.0, "theta_deg": 0.0}],
+            start_pose=[150.0, 1000.0, -0.4],
+        )
+        self.assertEqual(strategy.geometry_warnings(), [])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -15,7 +15,7 @@
   </script>
   <link rel="icon" type="image/png" sizes="192x192" href="logo/charara-mark.png"/>
   <link rel="apple-touch-icon" href="logo/charara-mark.png"/>
-  <link rel="stylesheet" href="css/style.css?v=97"/>
+  <link rel="stylesheet" href="css/style.css?v=98"/>
 </head>
 <body>
   <header>
@@ -309,6 +309,7 @@
             </div>
           </div>
         </div>
+        <div id="plan-badge" class="plan-badge hidden" role="status"></div>
         <div class="stats" id="plan-stats">No plan yet - draw a path (or a goal) and press Plan.</div>
       </section>
 
@@ -633,7 +634,12 @@
           <div class="photo-row">
             <img id="robot-photo-preview" class="photo-preview" alt="robot photo preview" hidden/>
             <div class="photo-ctl">
-              <label class="file-row">Photo <input id="robot-photo" type="file" accept="image/*"/></label>
+              <div class="file-row">
+                <span class="file-label">Photo</span>
+                <label class="file-pick" for="robot-photo">Choose file</label>
+                <input id="robot-photo" class="file-native" type="file" accept="image/*"/>
+                <span class="file-name" id="robot-photo-name">No file chosen</span>
+              </div>
               <span class="photo-hint">drawn inside the robot square (this browser only)</span>
             </div>
             <button id="btn-robot-photo-clear" class="ghost m-btn" title="Remove the robot photo">
@@ -666,7 +672,12 @@
           <div class="photo-row">
             <img id="opponent-photo-preview" class="photo-preview" alt="opponent photo preview" hidden/>
             <div class="photo-ctl">
-              <label class="file-row">Photo <input id="opponent-photo" type="file" accept="image/*"/></label>
+              <div class="file-row">
+                <span class="file-label">Photo</span>
+                <label class="file-pick" for="opponent-photo">Choose file</label>
+                <input id="opponent-photo" class="file-native" type="file" accept="image/*"/>
+                <span class="file-name" id="opponent-photo-name">No file chosen</span>
+              </div>
               <span class="photo-hint">fills the R1... squares (this browser only)</span>
             </div>
             <button id="btn-opponent-photo-clear" class="ghost m-btn" title="Remove the opponent photo">
@@ -1133,6 +1144,6 @@
     </aside>
   </main>
 
-  <script src="js/app.js?v=97"></script>
+  <script src="js/app.js?v=98"></script>
 </body>
 </html>

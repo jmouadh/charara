@@ -61,6 +61,8 @@ async def get_strategy(name: str) -> Dict:
     doc["authored_for"] = authored_for
     doc["team"] = state.team
     doc["mirrored"] = mirrored
+    # issue #10: leg-indexed playfield/clearance report against the CURRENT table
+    doc["warnings"] = strategy.geometry_warnings(state.field)
     return doc
 
 
@@ -119,6 +121,12 @@ async def load_strategy(name: str) -> Dict:
             f"strategy \"{name}\" has no recorded start pose - the mission starts "
             "from wherever the robot stands",
         )
+    # the mission is loadable, but its geometry must fit the table the robot
+    # is on NOW: report each leg that leaves the playfield (issue #10)
+    warnings = strategy.geometry_warnings(state.field)
+    for warning in warnings:
+        await state.log("warn", f"strategy \"{name}\": {warning}")
+    doc["warnings"] = warnings
     doc["teleported"] = teleported
     return doc
 

@@ -88,6 +88,12 @@ async def _run(args: argparse.Namespace) -> int:
             f"strategy '{strategy.name}' was authored for the {strategy.team} side - "
             f"mirrored for {config.team}{note}"
         )
+    # issue #10: report a drawing that does not fit the CURRENT table (leg by leg)
+    for warning in strategy.geometry_warnings({
+        "width_mm": config.field_width_mm,
+        "height_mm": config.field_height_mm,
+    }):
+        print(f"warning: {warning}", file=sys.stderr)
 
     brain = Brain(config)
     await brain.start()

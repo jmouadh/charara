@@ -360,8 +360,10 @@ the note under the buttons shows the exact `GYRO_SCALE=...` line to add to
 
 ![Live re-planning: the opponent R1 is reported by the camera in the middle of the route, the log shows "R1 moved ... our route is re-checked" and the next "plan ready", and the dashed plan is re-routed around it](assets/screenshots/console-reroute.png)
 
-Warnings appear in the plan stats block and the log. The complete catalogue is
-in [03 section 11](03-planner-algorithms.md). The most common ones:
+Warnings appear in the plan stats block, behind the amber `⚠ N` badge (hover it
+for the category and the full lines), in the log, and - for a strategy loaded
+from disk - in the API's `warnings` list. The complete catalogue is in
+[03 section 11](03-planner-algorithms.md). The most common ones:
 
 * *"obstacle change does not affect the remaining route - trajectory
   unchanged"* - nothing was necessary, the robot kept driving.
@@ -443,14 +445,41 @@ in [03 section 11](03-planner-algorithms.md). The most common ones:
 
 ## 14. Troubleshooting
 
-| Symptom | Check |
-|---|---|
-| No telemetry (pills red) | service reachable? `curl /api/health`; in docker: `docker compose logs api` |
-| Field artwork missing | `ui/static/field/table.png` present? replace it (or delete it, drop in the PDF and rebuild the `ui` image - see `../README.md`) |
-| First path not rounded | the joint to the connector needs a vertex near it; check the *kept sharp* warning |
-| Robot cuts a curve | lower **Arc chord tol** (e.g. 4) and/or raise **Corner radius**; **Node step** only affects straights |
-| Plan out of date bar | any edit invalidates the plan - press **Plan** |
-| Calibration rejected (`422`) | value outside the register range - the input tooltip lists min/max |
-| Board shows `CONFIG_FALLBACK` | the flash record was invalid (interrupted save or manual write); check the board error panel and press **Save to flash** again to rewrite it |
-| Settings lost after reboot | the edits were applied but never saved - press **Save to flash** |
-| UI looks unchanged after an update | hard reload - assets are versioned (`?v=N` in `index.html`) |
+One table for the whole chain, from the browser down to the board. Work top to
+bottom: a symptom seen in the UI is often a lower layer's fault, and the
+**Check** column tells you which one to look at. The protocol status names
+(`NODATA`, `BUSY`, `RANGE`, `BAD_LEN`, `STORAGE`, `FAULT`, `CONFIG_FALLBACK`,
+`DEADMAN`…) are defined in [05 section 2](05-api-reference.md) and
+[02 section 5](02-backend-architecture.md).
+
+### 14.1 Console / UI
+
+| Symptom | Probable cause | Check | Fix |
+|---|---|---|---|
+| No telemetry, pills red | the UI cannot reach the API, or the API cannot reach the board | `curl -s localhost:8000/api/health`; in docker `docker compose logs api`; the I2C monitor (tab *I2C*) shows the transactions | restart the stack (`docker compose up -d`); if the API is up but the board is mute, jump to 14.2 |
+| Everything works but the browser shows the old UI | assets are cached, the `?v=N` bump was missed | view-source of `ui/static/index.html`: the `?v=` number changed? | hard reload (Ctrl-Shift-R); the deploy step bumps `?v=N` for `style.css` and `app.js` |
+| Amber `⚠ N` badge next to the plan stats | the plan carries warnings (re-route, border clip, wait, reverse arrival…) | hover the badge - its tooltip lists the category and the exact log lines | read the lines in the log; a re-route that keeps the clearance is normal, a *"crosses the field border"* means the drawing must be fixed |
+| A warning at strategy **load** ("leg 2 (stroke): point 2 … outside the playfield") | the document was drawn for another table, or a point sits outside the wall | `GET /api/strategies/{name}` shows a `warnings` list, one entry per offending leg | edit the drawing (move the point/re-draw the leg) and save; the mission still loads and plans, the warning is advisory |
+| "Plan out of date" bar | any canvas edit invalidates the plan | the stats block is greyed out | press **Plan** again |
+| First path not rounded | the joint to the connector needs a vertex near it | the *kept sharp* warning in the plan stats | add a vertex, or raise **Corner radius** |
+| Robot cuts a curve | arc tessellation too coarse | lower **Arc chord tol** (e.g. 4); **Node step** only affects straights | raise **Corner radius** as well if the corner is tighter than the robot can turn |
+| Field artwork missing | `ui/static/field/` has no image (or a stale `?v=`) | `ls ui/static/field`; the Map rail's **Rescan** | drop the image/PDF in `ui/static/field`, press **Rescan**, rebuild the `ui` image |
+| Calibration value rejected (`422`) | out of the register's range | the input tooltip lists min/max; the API detail names the field | enter a value inside the range |
+| Move buttons refuse ("robot not idle", `409`) | a mission is executing or paused | the EXEC pill | **Stop** first - the drive pad and the calibration tests need an idle robot |
+
+### 14.2 Board / firmware
+
+| Symptom | Probable cause | Check | Fix |
+|---|---|---|---|
+| `NODATA` on a read | the board answered but the payload was empty (a sensor not wired, or a register read before the first sample) | the console log; the trace in the *I2C* tab (command, payload length) | wire the sensor; for a configuration read, wait one telemetry period and retry |
+| `BUSY` | a command arrived while the board was still executing the previous one (a move still running) | the trace: the previous `MOVE`/`GOTO` has no completion yet | wait for the stop event; the console already serialises motion, a manual `curl` may not |
+| `RANGE` | a parameter is outside the register limits (speed, ramp, PID gain…) | the Calibration/Config input tooltips | send a value inside the range; `CONFIG_FALLBACK` tells you when a *stored* value was clamped |
+| `BAD_LEN` | the frame length does not match the command's payload | the trace: compare with the golden frames in [05 section 2](05-api-reference.md) | a client bug - fix the payload; the board keeps its previous state |
+| `CONFIG_FALLBACK` | the flash record was invalid (interrupted save or a manual write) | the Calibration tab's board error panel | press **Save to flash** to rewrite the record, power-cycle, check it stays green |
+| `STORAGE` on a save | the flash write itself failed (CRC mismatch or a worn record) | the event log entry names the record; the settings still apply to RAM | retry **Save to flash**; if it keeps failing, power-cycle and retry once - a persistent `STORAGE` means the flash record is damaged |
+| Settings lost after reboot | the edits were applied but never committed | the Calibration/Config **dirty** marker | press **Save to flash** |
+| Motion stops with `FAULT` + context byte | the board latched a fault (STALL on a stepper, TIMEOUT on a segment, an end-stop) - the context byte says which motor/segment | the board error panel: fault name + context; the log line from the console | remove the cause (free the wheel, re-home), then **Clear Faults**; motion is refused while a fault is latched |
+| `DEADMAN` while driving from a script | no heartbeat within the deadman window (the console sends one while a mission runs) | who owns the link: a second client, or a script that stopped sending | keep one client per board; send the heartbeat every ~200 ms from scripts, or let the console drive |
+| Odometry jumps / heading drifts | wheel size or track length off, or a missed telemetry sample | the Calibration tab's drive/turn test against a tape measure | **Fix wheel size** / **Fix drive track**, then **Apply** and **Save to flash** |
+| Robot arrives short/long on every leg | the distance scale (wheel size) is off, not the planner | the *run ended … mm from the plan's last node* summary line | same calibration loop as above; re-check **Turn test** for the angle |
+| Board answers on I2C but the arm/display does not move | the peripheral is on the other bus (I2C-1 vs I2C-6) | the I2C monitor's bus selector; `ls /dev/i2c-*` | point the tool at the right bus; motion is on 1, the peripheral chain on 6 |

@@ -4234,6 +4234,7 @@ function applyPlanDoc(result, remapWaypoints = true) {
     `(${stats.n_gotos} GOTO, ${stats.n_arcs || 0} ARC, ${stats.n_actions} action) - ~${stats.est_s} s` +
     (stats.n_primitives ? `\n${stats.n_primitives} line/arc primitives` : "") +
     (result.warnings.length ? `\n! ${result.warnings.join("\n! ")}` : "");
+  renderPlanBadge(result.warnings || []);
   els.execBtn.disabled = false;
 }
 
@@ -5515,9 +5516,43 @@ function snapAnchor() {
   return null;
 }
 
+/** Warnings that change what the robot will actually drive: re-routed legs,
+ *  clamped/moved geometry, obstacle waits and arrival-angle fallbacks. The
+ *  full list stays in the stats block; this badge promotes the outcome. */
+const PLAN_OUTCOME_WARNINGS = [
+  ["re-route", /re-routed|kept sharp|switchback/i],
+  ["geometry", /closest allowed|moved to the closest|sits inside|clearance zone|clamped/i],
+  ["wait", /moving obstacle|wait/i],
+  ["arrival", /arrival angle|stop node/i],
+  ["reverse", /in REVERSE/i],
+];
+
+function renderPlanBadge(warnings) {
+  const badge = el("plan-badge");
+  if (!badge) return;
+  const hits = [];
+  for (const [label, pattern] of PLAN_OUTCOME_WARNINGS) {
+    const lines = (warnings || []).filter((warning) => pattern.test(warning));
+    if (lines.length) hits.push({ label, lines });
+  }
+  if (!hits.length) {
+    badge.classList.add("hidden");
+    badge.textContent = "";
+    badge.title = "";
+    return;
+  }
+  const count = hits.reduce((total, hit) => total + hit.lines.length, 0);
+  badge.textContent = `\u26a0 ${count}`;
+  badge.title =
+    "Plan warnings that change the outcome:\n" +
+    hits.map((hit) => `${hit.label}:\n! ${hit.lines.join("\n! ")}`).join("\n\n");
+  badge.classList.remove("hidden");
+}
+
 function invalidatePlan() {
   app.planElements = null;
   taskTimerSetEstimate(0);
+  renderPlanBadge([]);
   if (app.plan) {
     app.plan = null;
     els.execBtn.disabled = true;
@@ -7207,6 +7242,12 @@ function syncPhotoPreview(inputId, slot) {
   if (slot.url) preview.src = slot.url;
 }
 
+/** Show the chosen file name next to the styled picker (issue #16). */
+function syncPhotoName(inputId, fileName) {
+  const name = el(`${inputId}-name`);
+  if (name) name.textContent = fileName || "No file chosen";
+}
+
 /** Wire a file picker + clear button to a photo slot (data URL in storage). */
 function wirePhoto(inputId, clearId, key, slot, note) {
   const input = el(inputId);
@@ -7216,6 +7257,7 @@ function wirePhoto(inputId, clearId, key, slot, note) {
     const file = input.files && input.files[0];
     input.value = ""; // allow re-picking the same file later
     if (!file) return;
+    syncPhotoName(inputId, file.name);
     loadScaledPhoto(file, 512, (url) => {
       const image = new Image();
       image.src = url;
@@ -7234,6 +7276,7 @@ function wirePhoto(inputId, clearId, key, slot, note) {
     slot.image = null;
     slot.url = "";
     syncPhotoPreview(inputId, slot);
+    syncPhotoName(inputId, "");
     try { localStorage.removeItem(key); } catch (error) { /* private mode */ }
     logLine("info", "photo cleared");
   });
@@ -7245,6 +7288,8 @@ wirePhoto("opponent-photo", "btn-opponent-photo-clear", OPPONENT_PHOTO_KEY, app.
   "opponent photo updated - drawn inside the opponent squares");
 syncPhotoPreview("robot-photo", app.robotPhoto);
 syncPhotoPreview("opponent-photo", app.opponentPhoto);
+syncPhotoName("robot-photo", app.robotPhoto.url ? "saved photo" : "");
+syncPhotoName("opponent-photo", app.opponentPhoto.url ? "saved photo" : "");
 updateRobotsInfo();
 
 // ------------------------------------------------------------ colours -----

@@ -331,9 +331,19 @@ and the runner).
 | Endpoint | Body | Effect |
 |---|---|---|
 | `GET /api/strategies` | - | `{strategies: [{name, updated_at, n_elements, kind, team, notes}, ...], dir}`, newest first |
-| `GET /api/strategies/{name}` | - | full document (`elements`, `options`, `goal`, `obstacles`, `field`, `notes`, `version`); `404` if unknown |
+| `GET /api/strategies/{name}` | - | full document (`elements`, `options`, `goal`, `obstacles`, `field`, `notes`, `version`) plus `authored_for`, `team`, `mirrored` and `warnings`; `404` if unknown |
+| `POST /api/strategies/{name}/load` | - | make it the current mission (teleports the mock robot to its recorded start pose, `teleported` tells you), log it and return the document plus `warnings`; `404` if unknown |
 | `PUT /api/strategies/{name}` | `{elements, options?, goal?, obstacles?, notes?, kind?, tree?}` | create or replace; the current field size is recorded; `422` on an invalid name or body. `kind` is `"elements"` (v1 drawing, default) or `"bt"` (v2 behavior tree - then `tree` is required; see [08](08-brain-and-strategies.md) section 8) |
 | `DELETE /api/strategies/{name}` | - | remove it; `404` if unknown |
+
+`warnings` is the load-time geometry report (issue #10): one line per
+motion **leg** whose point leaves the playfield, whose body crosses the field
+border at the current table size, or whose recorded start pose does not fit.
+Legs are the motion elements in order (a stroke or a waypoint/goal is one leg;
+actions do not count), so `"leg 2 (stroke): … outside the playfield"` is the
+second drawing step. The list never rejects a document - an old strategy stays
+loadable - and `POST …/load` also logs every line as a `warn` event; the brain
+prints the same lines to stderr at startup.
 
 ```bash
 curl -s -X PUT localhost:8090/api/strategies/main -H "Content-Type: application/json" \

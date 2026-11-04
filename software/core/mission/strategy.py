@@ -141,6 +141,24 @@ class Strategy:
         )
 
     # ------------------------------------------------------------- storage
+    def geometry_warnings(self, field: Optional[Dict[str, Any]] = None) -> List[str]:
+        """Leg-indexed playfield/clearance report (issue #10).
+
+        A strategy saved against another table can carry a stroke or
+        waypoint outside the current playfield, or a recorded start pose
+        whose body does not fit. The planner re-routes such a mission, but
+        the operator should hear about it WHEN IT IS LOADED, with the leg
+        number - not after the robot is already planned. ``field`` overrides
+        the document's recorded table (the console validates against the
+        table the robot is on now). Never raises: old strategies stay
+        loadable, the caller logs the lines.
+        """
+        from software.core.navigation.validation import mission_geometry_warnings
+
+        return mission_geometry_warnings(
+            self.elements, self.options, field or self.field, self.start_pose,
+        )
+
     def save(self, directory: Path | str) -> Path:
         """Write ``<directory>/<name>.json`` (creates the directory)."""
         # reject an unpalayable document at SAVE time: a permanent obstacle

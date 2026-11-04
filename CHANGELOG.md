@@ -146,6 +146,33 @@ project uses [Semantic Versioning](https://semver.org/).
   **theme &amp; map-palette** shot.
 - `LICENSE` (BSD-3-Clause), with the vendor licenses of the ST HAL and CMSIS
   called out.
+- **Load-time geometry validation** (issue #10): `GET /api/strategies/{name}`
+  and `POST /api/strategies/{name}/load` now return a `warnings` list, one
+  line per motion **leg** that leaves the playfield, whose rotated body
+  crosses the field border, or whose recorded start pose does not fit the
+  table the robot is on now (`software/core/navigation/validation.py`). The
+  console logs every line as a `warn` event and the brain prints them at
+  startup. Advisory by design - an old strategy stays loadable - with a 5 mm
+  border tolerance so the normal start-zone pose (a body flush against the
+  wall) does not cry wolf, and the start-to-first-target connector is left to
+  the planner, which already projects it.
+- **Plan outcome badge** (issue #2): an amber `⚠ N` pill next to the plan
+  stats counts the warnings that change what the robot actually drives
+  (re-route, geometry, waits, arrival-angle fallbacks, reverse arrivals) and
+  lists them, grouped, in its tooltip; the full list stays in the stats block
+  and disappears with the plan when an edit invalidates it.
+- **Golden protocol frames** (issue #7): `tests/test_protocol.py` freezes the
+  command and status tables plus 28 request frames byte for byte, so a wire
+  format change cannot slip in unnoticed.
+- **Styled photo pickers** (issue #16): the Robot/opponents photo rows are a
+  proper **Choose file** button with the selected filename beside it
+  (`No file chosen` when empty, `saved photo` when restored), instead of a
+  clipped native file input.
+- **One troubleshooting table** (issue #3): Docs/04 section 14 is now
+  *Symptom | Probable cause | Check | Fix*, split into console/UI and
+  board/firmware faults (no telemetry, `NODATA`, `BUSY`, `RANGE`, `BAD_LEN`,
+  `STORAGE`, latched `FAULT`, `DEADMAN`, `CONFIG_FALLBACK`, lost settings,
+  odometry drift, plan warnings, `422` rejections, stale UI cache).
 
 ### Changed
 
@@ -291,6 +318,32 @@ project uses [Semantic Versioning](https://semver.org/).
   The hold now owns its departure (the delay is skipped when the reverse is
   looked up), both in the mid-run assessment and in the re-planned program,
   so the robot backs up and continues instead of stopping.
+- **The match clock obeys Pause / Resume / Redo**: Pause froze the robot but
+  the clock kept running, Resume left the lost time behind and Redo kept the
+  old elapsed value. `GameClock` now records the paused span (timed actions
+  neither fire nor expire while paused, and a running clock is resumed by
+  Execute), `/api/pause` and `/api/resume` drive it, and Redo rewinds the
+  clock to *not started* together with the sequence.
+- **A returning route no longer completes its last waypoint at the start**:
+  the re-plan cursor matched samples by distance, so a closed-loop mission
+  whose final waypoint sits a couple of millimetres from the start counted it
+  as visited on the first sample - the run then skipped the real final stop,
+  the arrival angle and the closing reverse. The cursor now advances
+  monotonically along the driven route, so a waypoint is visited only after
+  the previous element completed.
+- **A game element spawned earlier in the mission is not a blockage**: the
+  mid-run obstacle check compared the *remainder* plan against the *whole*
+  mission's actions and treated a piece that the sequence had just removed
+  (or not yet spawned) as an obstacle, re-planning an unneeded arc. The check
+  now receives the full mission ladder and the request's action names, so the
+  plan is clipped against what is on the table at that moment.
+- **A waypoint that must be reached backwards is approached backwards**: a
+  second waypoint whose arrival angle points back along the approach was
+  reached with a 180 deg turn on the spot or a wide unneeded arc. The planner
+  now looks for a stand-off on the side the robot already faces (90 deg
+  tolerance, 300 mm minimum run), turns to the arrival angle there and drives
+  the last stretch in reverse, so the final pose matches the requested angle
+  and the drawn arc disappears.
 
 ## [3.2.0] - 2026-10-19
 

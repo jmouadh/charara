@@ -867,6 +867,35 @@ aborting (...) - fix the board, then press Execute"*) instead of sitting on
 | *log* `moving obstacle blocks the remaining route - waiting for it to clear (...)` | wait instead of a huge/blocked detour (section 10.3) |
 | *log* `the route is clear again - resuming the mission (N segments)` | a waiting run restarted itself |
 
+### 11.1 Load-time geometry check (before you press Plan)
+
+`software/core/navigation/validation.py` walks a strategy as soon as it is
+loaded - `GET /api/strategies/{name}`, `POST …/load`, and the brain at startup -
+and numbers the **legs** the way the operator reads the sequence (a stroke or a
+waypoint/goal is one leg, actions are not counted). It reports, with the leg
+number:
+
+| Load-time warning | Meaning |
+|---|---|
+| `leg N (stroke): point P (x, y) mm is outside the playfield (W x H mm)` | the drawing leaves the table; the planner would only clip it at plan time |
+| `leg N (waypoint/goal): (x, y) mm is outside the playfield (W x H mm)` | same for a stop point |
+| `leg N (waypoint): the body at the arrival angle (A deg) does not fit inside the playfield at (x, y) mm` | the final rotation would put a corner over the wall |
+| `leg N (stroke): the body crosses the field border at (x, y) mm (D mm into the leg)` | the body, not the centre line, leaves the table |
+| `start pose (x, y) mm at A deg leaves the body outside the playfield` | the recorded start does not fit (it is reported first) |
+
+The check tolerates `LOAD_BORDER_TOLERANCE_MM` (5 mm) of overhang: a start
+zone is the wall, and a 300 mm body turned by a fraction of a degree around
+`x = 150 mm` pokes about a millimetre through it - that is how real documents
+are authored and must not warn. The connector from the recorded start pose to
+the first target is deliberately not checked either: the planner projects the
+start itself ("path start inside the robot clearance zone - moved to…"), so
+the load-time report only lists what the operator can fix in the drawing.
+
+The check is advisory and never rejects a document: an old strategy stays
+loadable, the console logs each line as a `warn` event and returns it in the
+`warnings` list, and the brain prints it to stderr. Obstacles are deliberately
+**not** part of it - they move during a match, the field border does not.
+
 ## 12. Performance notes
 
 * Planning a typical mission (3 m, a handful of primitives) takes 50-300 ms,
