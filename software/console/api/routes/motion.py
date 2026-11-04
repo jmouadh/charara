@@ -12,8 +12,16 @@ from typing import Dict
 
 from fastapi import APIRouter, HTTPException
 
-from software.core.mission.executor import needs_in_place_actions
-from software.core.mission.orchestrator import follow_bounds, resume_from_wait
+from software.core.mission.executor import (
+    EXEC_PAUSED,
+    needs_game_element_actions,
+    needs_in_place_actions,
+)
+from software.core.mission.orchestrator import (
+    apply_game_element,
+    follow_bounds,
+    resume_from_wait,
+)
 from software.core.navigation.options import PlanOptions
 
 from ...runtime.state import state
@@ -79,12 +87,21 @@ async def execute(body: ExecuteIn) -> Dict:
     client()
     executor = state.executor
     assert executor is not None
+    if not state.game_allows_motion():
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "game time is over - reset the game clock in Game > Game time "
+                "before running again"
+            ),
+        )
     if state.vision_waiting is not None:
         # The displayed plan can be the pre-obstacle route: a wait deliberately
         # does not replace it with an unsafe candidate. Never replay that stale
         # segment list from the stopped pose; retry the remaining mission using
         # current odometry and the latest obstacle snapshot instead.
         if await resume_from_wait(state):
+            await state.game_start_if_configured()
             return {"ok": True, "resumed": True}
         waiting = state.vision_waiting or {}
         reason = str(waiting.get("reason") or "the obstacle still blocks the route")
@@ -121,9 +138,15 @@ async def execute(body: ExecuteIn) -> Dict:
     if follow_path is not None:
         options = PlanOptions.from_dict((state.last_plan_request or {}).get("options"))
         bounds = follow_bounds(state.field["width_mm"], state.field["height_mm"], options)
+    hook_kwargs = {}
+    if needs_game_element_actions(segments):
+        # the plan carries erase/spawn actions: update the live map and tell
+        # the console as the run reaches each one
+        hook_kwargs["game_element_hook"] = lambda action: apply_game_element(state, action)
     try:
         await executor.start(
-            segments, body.deadman_ms, follow_path=follow_path, follow_bounds=bounds
+            segments, body.deadman_ms, follow_path=follow_path, follow_bounds=bounds,
+            **hook_kwargs,
         )
     except (RuntimeError, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -144,29 +167,48 @@ async def execute(body: ExecuteIn) -> Dict:
         )
     else:
         await state.log("info", f"execution started: {len(segments)} segments")
+    # Execute begins (or continues) the match: the clock starts once and keeps
+    # running across re-plans; an explicit Pause freezes it (Resume continues).
+    await state.game_start_if_configured()
     return {"ok": True, "n_segments": len(segments), "streaming": follow_path is not None}
 
 
 @router.post("/mission/redo")
 async def mission_redo() -> Dict:
-    """Mock rehearsal: put the robot back EXACTLY at the last run's start.
+    """Put the robot back EXACTLY at the last run's start - also when paused.
 
-    The simulator is teleported (no driving) to the pose the robot held when
-    the last run started - press Execute again to replay the same plan from
-    the same conditions, or edit the drawing and re-plan. Real-board mode
-    refuses: the console never moves the real robot by itself.
+    After a run: the simulator is teleported (no driving) to the pose the
+    robot held when the last run started - press Execute again to replay the
+    same plan from the same conditions, or edit the drawing and re-plan.
+
+    WHILE PAUSED: the paused run is ended and the same redo happens, so the
+    operator can replay the whole sequence from its beginning (the requested
+    "Pause then Redo"). Real-board mode refuses: the console never moves the
+    real robot by itself, and nothing is stopped before that answer.
 
     While the redo is armed, SAVING the strategy puts the robot back at the
     pose it had BEFORE the redo (the run's end): a committed step keeps the
     mission continuing from where the validated run actually finished.
     """
-    require_no_execution()
+    executor = state.executor
+    paused = executor is not None and executor.is_running() and executor.state == EXEC_PAUSED
+    if executor is not None and executor.is_running() and not paused:
+        raise HTTPException(
+            status_code=409,
+            detail="the mission is running - pause it first, then REDO ends it and "
+            "goes back to the start of the sequence",
+        )
     if state.transport != "mock":
         raise HTTPException(
             status_code=409,
             detail="redo is a mock rehearsal tool - it teleports the robot; on the real "
             "robot place it back and press Set Pose",
         )
+    if paused:
+        # the paused mission is over: replaying the sequence starts it again
+        await executor.stop("ended by REDO - replay the path from its start")
+        await executor.wait()
+    require_no_execution()
     if state.last_run_start is None:
         raise HTTPException(status_code=409, detail="nothing to redo yet - execute a plan first")
     start = state.last_run_start
@@ -176,6 +218,10 @@ async def mission_redo() -> Dict:
             state.redo_restore_pose = (float(pose[0]), float(pose[1]), float(pose[2]))
     link = client()
     await call(lambda: link.set_pose(float(start[0]), float(start[1]), float(start[2])))
+    # Redo restarts the counters: the match clock goes back to its full
+    # duration and the next Execute starts it again (the task timer is reset
+    # by the console at the same moment).
+    await state.game_reset()
     await state.log(
         "info",
         f"redo: robot placed back at the start of the last run "
@@ -191,19 +237,31 @@ async def mission_redo() -> Dict:
 
 @router.post("/pause")
 async def pause() -> Dict:
-    """Pause the running mission (stop in place; resume continues)."""
+    """Pause the running mission and both counters (stop in place; resume continues)."""
     if state.executor is None or not state.executor.is_running():
         raise HTTPException(status_code=409, detail="nothing is executing")
     state.executor.pause()
+    # the console shows one Pause button: the task timer is paused by the UI
+    # and the server-authoritative match clock here
+    await state.game_pause()
     return {"ok": True}
 
 
 @router.post("/resume")
 async def resume() -> Dict:
-    """Resume a paused mission."""
+    """Resume a paused mission and continue the frozen match clock."""
     if state.executor is None:
         raise HTTPException(status_code=503, detail="robot link not initialised")
+    if not state.game_allows_motion():
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "game time is over - reset the game clock in Game > Game time "
+                "before resuming"
+            ),
+        )
     state.executor.resume()
+    await state.game_resume()
     return {"ok": True}
 
 

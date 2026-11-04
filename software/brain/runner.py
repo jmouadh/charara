@@ -32,8 +32,11 @@ from software.brain.match import play_tree
 from software.config import Settings
 from software.core.mission import watcher
 from software.core.mission.executor import EXEC_DONE, EXEC_IDLE, Executor
-from software.core.mission.executor import needs_in_place_actions
-from software.core.mission.orchestrator import execute_plan
+from software.core.mission.executor import (
+    needs_game_element_actions,
+    needs_in_place_actions,
+)
+from software.core.mission.orchestrator import apply_game_element, execute_plan
 from software.core.mission.strategy import KIND_BT, Strategy
 from software.core.world.vision import VisionStore
 from software.session import RobotSession
@@ -258,8 +261,15 @@ class Brain:
                         "streaming skipped: this plan performs an in-place rotation, "
                         "pause or arrival turn - the segment backend drives it",
                     )
+            hook_kwargs = {}
+            if needs_game_element_actions(result["segments"]):
+                hook_kwargs["game_element_hook"] = (
+                    lambda action: apply_game_element(self.ctx, action)
+                )
             try:
-                await executor.start(result["segments"], None, follow_path=follow)
+                await executor.start(
+                    result["segments"], None, follow_path=follow, **hook_kwargs
+                )
             except (RuntimeError, ValueError) as exc:
                 await self.log("error", f"strategy '{strategy.name}' not started: {exc}")
                 return "failed"

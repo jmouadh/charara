@@ -38,6 +38,7 @@ from fastapi import APIRouter, HTTPException
 from software.core import diagnostics
 from software.core.mission.executor import EXEC_DONE
 from software.core.mission.interfaces import RobotIOError
+from software.core.mission.teams import TEAMS
 from software.robot import protocol, robot_config
 
 from ...runtime.state import state
@@ -662,9 +663,34 @@ async def readiness() -> Dict:
             "warn",
             f"state {imu.get('state')} - heading falls back to wheels (allowed, less precise)",
         )
+    # The primary starting zones of the Game Configuration own the match
+    # starts: check they exist (both teams) before measuring the robot.
+    zones = state.configured_start_zones()
+    if len(zones) == len(TEAMS):
+        add(
+            "start zones",
+            "pass",
+            "both primary start zones define the match starts",
+        )
+    elif zones:
+        configured = ", ".join(state.team_labels[side] for side in zones)
+        add(
+            "start zones",
+            "warn",
+            f"only the {configured} primary start zone is set - the other start "
+            "falls back to TEAM_START_*",
+        )
+    else:
+        add(
+            "start zones",
+            "warn",
+            "no primary start zone in Game Configuration - using the TEAM_START_* starts",
+        )
     pose = _pose()
     info = state.team_info()
     start = info["start"]
+    from_zone = state.start_source(state.team) == "zone"
+    origin = "start zone" if from_zone else "configured start"
     if pose is None:
         add("start pose", "fail", "no pose yet - wait for telemetry")
     else:
@@ -674,8 +700,13 @@ async def readiness() -> Dict:
         add(
             "start pose",
             "pass" if in_place else "fail",
-            f"{distance:.0f} mm / {heading:.1f} deg from the {info['label']} start"
-            + ("" if in_place else " - place the robot and press Set Pose"),
+            f"{distance:.0f} mm / {heading:.1f} deg from the {info['label']} {origin} "
+            f"({start[0]:.0f}, {start[1]:.0f}, {start[2]:.0f} deg)"
+            + (
+                ""
+                if in_place
+                else " - place the robot in its start zone and press Set Pose"
+            ),
         )
     failed = [check for check in checks if check["status"] == "fail"]
     warned = [check for check in checks if check["status"] == "warn"]

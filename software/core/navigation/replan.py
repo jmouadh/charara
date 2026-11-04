@@ -234,33 +234,87 @@ def advance_cursor(
     alternative path): they count as completed so the cursor moves past
     them and the next checkpoint becomes the target. Strokes are done when
     their end was reached; a pause / rotation / manual step is done when the
-    next MOTION element is done. The cursor only moves forward.
+    next MOTION element is done - or, when that motion is a stroke, as soon
+    as the driven route has ENTERED the stroke: the actions in front of it
+    have then already run, even though the stroke itself is still ahead.
+    (Requiring the stroke's END there replayed the pause + reverse + rotation
+    from the drawing mid-stroke: the robot backed up after the second
+    waypoint on a camera re-plan.) The cursor only moves forward.
+
+    The search is MONOTONIC along the driven route: each element must be
+    completed at or after the point where the previous one was. Without that
+    rule a mission that RETURNS to a point it already visited (the usual
+    final waypoint = the start pose) looked completed from the very first
+    metre of the driven polyline: the whole remainder collapsed to "nothing
+    left", and the fallback rebuilt the tail without the waypoint's arrival
+    angle (strategy3 rehearsal: the robot finished at 103 deg instead of the
+    commanded 0 deg, 2026-11-04).
     """
 
     def is_skipped(point: Point) -> bool:
         return any(math.dist(point, (float(s[0]), float(s[1]))) <= 1.0 for s in skipped)
 
-    def completed(index: int) -> bool:
-        """Has the driven route completed the mission element at ``index``?"""
+    def stroke_started(pts: Sequence[Point]) -> bool:
+        """Has the robot already entered this stroke beyond its first mm?"""
+        if not driven or len(pts) < 2:
+            return False
+        nearest = _nearest_on_polyline(pts, (float(driven[-1][0]), float(driven[-1][1])))
+        if nearest is None:
+            return False
+        distance, along = nearest
+        return distance <= ROUTE_ON_TOL_MM and along >= ROUTE_EARLY_MM
+
+    progress = 0.0  # arc length of the driven route already accounted for
+
+    def visited(point: Point, tol_mm: float) -> Optional[float]:
+        """Absolute along where the route AFTER ``progress`` passes ``point``."""
+        cut = _polyline_cut_at(driven, progress) if progress > 0.0 else [
+            (float(p[0]), float(p[1])) for p in driven
+        ]
+        if not cut:
+            return None
+        if len(cut) == 1:
+            return progress if math.dist(cut[0], point) <= tol_mm else None
+        nearest = _nearest_on_polyline(cut, point)
+        if nearest is None or nearest[0] > tol_mm:
+            return None
+        return progress + nearest[1]
+
+    def completed(index: int) -> Optional[float]:
+        """Along where the element at ``index`` is completed (None = not yet)."""
+        actions_before = False
         while index < len(elements):
             element = elements[index]
             kind = str(element.get("kind", "stroke"))
             if kind == "waypoint":
                 point = (float(element.get("x", 0.0)), float(element.get("y", 0.0)))
                 if is_skipped(point):
-                    return True  # given up after the bounded wait: move on
-                return route_distance_mm(driven, point) <= WAYPOINT_VISIT_TOL_MM
+                    return progress  # given up after the bounded wait: move on
+                return visited(point, WAYPOINT_VISIT_TOL_MM)
             if kind == "stroke":
                 pts = _stroke_points(element)
                 if len(pts) < 2:
                     index += 1
+                    actions_before = True
                     continue
-                return route_distance_mm(driven, pts[-1]) <= STROKE_END_TOL_MM
-            index += 1  # actions: done when the next motion element is done
-        return True
+                end = visited(pts[-1], STROKE_END_TOL_MM)
+                if end is not None:
+                    return end
+                # an action only "owns" the NEXT motion: once the robot is
+                # driving that stroke, the action has been executed
+                if actions_before and stroke_started(pts):
+                    return progress
+                return None
+            index += 1  # actions: done when the next motion element is reached
+            actions_before = True
+        return progress  # nothing left after this element
 
     index = max(0, min(int(cursor), len(elements)))
-    while index < len(elements) and completed(index):
+    while index < len(elements):
+        done_at = completed(index)
+        if done_at is None:
+            break
+        progress = max(progress, float(done_at))
         index += 1
     return index
 

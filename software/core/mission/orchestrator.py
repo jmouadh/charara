@@ -42,6 +42,15 @@ from ..navigation.clearance import (
     waypoint_clearance,
 )
 from ..navigation.options import PlanOptions
+from ..navigation.polygon import distance_to_polygon, vertices as polygon_vertices
+from ..world.obstacles import (
+    erase_game_element,
+    is_game_element,
+    normalize_obstacles,
+    permanents_kept,
+    spawn_game_element,
+    validate_actions,
+)
 from ..navigation.replan import (
     WAYPOINT_VISIT_TOL_MM,
     advance_cursor,
@@ -58,7 +67,12 @@ from ..navigation.replan import (
     slice_remaining_elements,
 )
 from ..navigation.trajectory import plan
-from .executor import EXEC_ABORTED, EXEC_PAUSED, needs_in_place_actions
+from .executor import (
+    EXEC_ABORTED,
+    EXEC_PAUSED,
+    needs_game_element_actions,
+    needs_in_place_actions,
+)
 from .interfaces import MissionContext
 
 # a moving obstacle (another robot) that blocks the route costs nothing to
@@ -95,6 +109,29 @@ CAUTION_GAP_MM = 700.0
 STOP_GAP_MM = 250.0
 CAUTION_SCALE = 0.35
 TIGHT_ROOM_MM = 150.0
+#: A MOVING obstacle gets a safety bubble: the ladder measures the gap to the
+#: opponent's body PLUS this margin, so the robot slows down and stops early
+#: enough for the opponent to keep closing in while it brakes / re-plans
+#: (2026-10-27: a fast opponent closed the last 250 mm during the stop and
+#: touched the robot). Static obstacles keep the body-only check - a close
+#: waypoint is intentionally allowed to stop next to one. The pad must stay
+#: BELOW the planner's obstacle margin (150 mm) or a legitimate detour would
+#: always look blocked and the robot would wait forever.
+DYNAMIC_SAFETY_PAD_MM = 100.0
+#: The ladder's bands for a moving obstacle: the earlier stop gives the
+#: planner/opponent time without stopping for every distant robot.
+DYNAMIC_STOP_GAP_MM = 400.0
+DYNAMIC_CAUTION_GAP_MM = 800.0
+#: Emergency stop when a moving obstacle is this close to the body, even when
+#: it does not cross the remaining path (a side-on approach).
+DYNAMIC_CONTACT_PAD_MM = 150.0
+#: A padded bubble that already overlaps the START of the remaining route
+#: cannot be stopped for - the robot is inside it already. Stopping there only
+#: produced a stop -> assess -> re-plan -> restart -> stop loop that ran the
+#: planner back to back (2026-10-27: an opponent parked ~270 mm beside the
+#: route pinned the robot at its start). Inside this distance only a REAL
+#: body clip decides; the emergency contact bubble still guards a hit.
+DYNAMIC_EXIT_MM = 250.0
 #: how long a restarted run must survive before it counts as running: an
 #: immediate abort (a latched fault) used to be invisible to the caller
 REPLAN_VERIFY_S = 0.5
@@ -110,16 +147,23 @@ WAIT_RESUME_MAX_FAILS = 3
 # gets there) and never lasts longer than WAIT_MAX_S: after that the robot
 # tries an alternative path to the checkpoint and, when there is none, gives
 # it up and continues with the NEXT waypoint (a stop is never forever).
-WAYPOINT_WAIT_REACH_MM = 600.0
+# It must stay ahead of the DYNAMIC_SAFETY_PAD_MM stop point, otherwise the
+# ladder stops/re-plans the robot just outside this range and the blocked
+# checkpoint is never actually waited for (2026-10-27).
+WAYPOINT_WAIT_REACH_MM = 900.0
 WAIT_MAX_S = 1.0
 
 
 def obstacle_distance_mm(obstacle: Dict, position: Tuple[float, float]) -> float:
     """Distance from ``position`` to the obstacle boundary (0 when inside)."""
     px, py = float(position[0]), float(position[1])
-    if str(obstacle.get("kind", "rect")) == "circle":
+    kind = str(obstacle.get("kind", "rect"))
+    if kind == "circle":
         cx, cy = float(obstacle.get("x", 0.0)), float(obstacle.get("y", 0.0))
         return max(0.0, math.hypot(px - cx, py - cy) - float(obstacle.get("r", 0.0)))
+    if kind == "polygon":
+        points = polygon_vertices(obstacle)
+        return distance_to_polygon(px, py, points) if points else math.inf
     x0, y0 = float(obstacle.get("x", 0.0)), float(obstacle.get("y", 0.0))
     x1, y1 = x0 + float(obstacle.get("w", 0.0)), y0 + float(obstacle.get("h", 0.0))
     dx = max(x0 - px, 0.0, px - x1)
@@ -146,16 +190,165 @@ def nearby_obstacles(
     return [o for o in obstacles if obstacle_distance_mm(o, position) <= reach]
 
 
+#: How far along the remaining route the travel direction is sampled. A point
+#: inside this radius may be the route's projection BEHIND the robot (the
+#: robot drifts ahead of the drawn line), so the first point beyond it is used.
+TRAVEL_LOOKAHEAD_MM = 60.0
+
+
+def travel_direction(
+    path: Sequence,
+    pose: Optional[Tuple[float, float]],
+    heading_deg: Optional[float] = None,
+) -> Optional[Tuple[float, float]]:
+    """Unit vector of the direction the robot is about to drive.
+
+    Taken from the REMAINING route so a backwards close-waypoint departure
+    (or a route that starts behind the robot) is handled correctly. Falls
+    back to the body heading when the path has no usable leg.
+    """
+    if pose is None:
+        return None
+    px, py = float(pose[0]), float(pose[1])
+    points = [(float(p[0]), float(p[1])) for p in path if len(p) >= 2]
+    direction: Optional[Tuple[float, float]] = None
+    if len(points) >= 2:
+        for x, y in remaining_path(points, (px, py))[1:]:
+            dx, dy = x - px, y - py
+            length = math.hypot(dx, dy)
+            if length <= 1e-6:
+                continue
+            direction = (dx / length, dy / length)
+            if length >= TRAVEL_LOOKAHEAD_MM:
+                return direction
+    if direction is not None:
+        return direction
+    if heading_deg is not None:
+        rad = math.radians(float(heading_deg))
+        return (math.cos(rad), math.sin(rad))
+    return None
+
+
+def obstacle_behind_robot(
+    obstacle: Dict,
+    pose: Tuple[float, float],
+    direction: Optional[Tuple[float, float]],
+) -> bool:
+    """Does the WHOLE obstacle lie behind the robot's travel direction?
+
+    A moving obstacle following the robot cannot be driven into while the
+    robot continues forward, so it must not trigger the contact bubble or
+    the reaction ladder (live report: an opponent right behind the robot
+    re-armed the emergency stop on every camera frame and froze the run).
+    Every outline point is projected on ``direction``: an obstacle that
+    still reaches beside or ahead of the robot centre is kept.
+    """
+    if direction is None:
+        return False
+    dx, dy = float(direction[0]), float(direction[1])
+    px, py = float(pose[0]), float(pose[1])
+    kind = str(obstacle.get("kind", "rect"))
+    if kind == "circle":
+        cx = float(obstacle.get("x", 0.0))
+        cy = float(obstacle.get("y", 0.0))
+        radius = max(0.0, float(obstacle.get("r", 0.0)))
+        return (cx - px) * dx + (cy - py) * dy + radius <= 0.0
+    if kind == "polygon":
+        points = [(float(p[0]), float(p[1])) for p in polygon_vertices(obstacle)]
+    else:
+        x0 = float(obstacle.get("x", 0.0))
+        y0 = float(obstacle.get("y", 0.0))
+        x1 = x0 + float(obstacle.get("w", 0.0))
+        y1 = y0 + float(obstacle.get("h", 0.0))
+        points = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)]
+    if not points:
+        return False
+    return max((x - px) * dx + (y - py) * dy for x, y in points) <= 0.0
+
+
 def elements_signature(elements: Sequence[Dict]) -> str:
     """Stable identity of a mission so an edit can be told from a re-send."""
     return json.dumps(list(elements), sort_keys=True, separators=(",", ":"))
+
+
+def _obstacle_geometry(obstacle: Dict) -> Tuple:
+    """Rounded, comparable geometry of one obstacle (identity ignored)."""
+    def number(key: str) -> float:
+        """A coordinate rounded like the permanent-lock signature."""
+        try:
+            return round(float(obstacle.get(key, 0.0)), 1)
+        except (TypeError, ValueError):
+            return 0.0
+
+    kind = str(obstacle.get("kind") or "rect")
+    if kind == "polygon":
+        return (
+            kind,
+            tuple(
+                (round(float(point[0]), 1), round(float(point[1]), 1))
+                for point in obstacle.get("points") or []
+                if isinstance(point, (list, tuple)) and len(point) >= 2
+            ),
+        )
+    if kind == "circle":
+        return (kind, number("x"), number("y"), number("r"))
+    return (kind, number("x"), number("y"), number("w"), number("h"))
+
+
+def route_check_obstacles(
+    obstacles: Sequence[Dict],
+    elements: Sequence[Dict],
+    planned_obstacles: Optional[Sequence[Dict]] = None,
+) -> List[Dict]:
+    """Obstacles a flat remainder PATH may be checked against.
+
+    The planner routes every leg on the obstacle map valid at that point:
+    a leg AFTER a game-element ``erase`` may legitimately cross the old
+    spot, and a leg after a ``spawn`` already clears the new geometry. A
+    flat remainder path cannot tell those phases apart, so every piece the
+    MISSION erases or spawns is exempt - including one whose action is
+    already behind the cursor: the piece it just placed can sit right next
+    to the robot (the strategy releases it there), and stopping/re-planning
+    would not move it. Otherwise the ladder saw a future leg through A on
+    every movement cell and re-planned nonstop before the robot even
+    reached the element (live incident 2026-10-30), or re-planned right after
+    a spawn because the body overlapped the freshly placed piece (strategy3,
+    2026-11-04). Everything else (permanents, camera reports, opponent poses,
+    untouched game elements) stays checked.
+
+    The exemption only holds while the piece still stands EXACTLY where the
+    plan saw it (``planned_obstacles`` is the map the current route was
+    built on): a game element the operator moved mid-run is a NEW blockage
+    and must drive the ladder. Without that map the element stays checked
+    (fail safe).
+    """
+    names = {
+        str(element.get("name", "")).strip().casefold()
+        for element in elements
+        if str(element.get("kind", "")).strip().lower() in ("erase", "spawn")
+    }
+    if not names or planned_obstacles is None:
+        return list(obstacles)
+    planned = {
+        str(obstacle.get("name", "")).strip().casefold(): _obstacle_geometry(obstacle)
+        for obstacle in planned_obstacles
+        if is_game_element(obstacle)
+    }
+    out: List[Dict] = []
+    for obstacle in obstacles:
+        if is_game_element(obstacle):
+            name = str(obstacle.get("name", "")).strip().casefold()
+            if name in names and planned.get(name) == _obstacle_geometry(obstacle):
+                continue  # unchanged since planning: phase-dependent
+        out.append(obstacle)
+    return out
 
 
 def _head_waypoint(elements: Sequence[Dict]) -> Optional[Tuple[float, float]]:
     """The first motion target of a remainder when it is a WAYPOINT."""
     for element in elements:
         kind = str(element.get("kind", "stroke"))
-        if kind in ("pause", "rotate", "drive", "release"):
+        if kind in ("pause", "rotate", "drive", "release", "erase", "spawn"):
             continue
         if kind == "waypoint" and "x" in element and "y" in element:
             return (float(element["x"]), float(element["y"]))
@@ -208,6 +401,8 @@ def clip_gap_mm(
     options_dict: Optional[Dict],
     field_width_mm: float = 3000.0,
     field_height_mm: float = 2000.0,
+    pad_mm: float = 0.0,
+    border_pad_mm: Optional[float] = None,
 ) -> Tuple[float, Optional[Tuple[float, float]]]:
     """Distance ALONG ``path`` to the first point that physically clips an obstacle.
 
@@ -230,6 +425,7 @@ def clip_gap_mm(
     width, height = body_geometry(options)
     clip = first_body_clip(
         points, obstacles, width, height, field_width_mm, field_height_mm,
+        pad_mm=pad_mm, border_pad_mm=border_pad_mm,
     )
     if clip is None:
         return (math.inf, None)
@@ -333,6 +529,12 @@ async def _start_verified(
     """
     executor = ctx.executor
     assert executor is not None
+    hook = (
+        (lambda action: apply_game_element(ctx, action))
+        if needs_game_element_actions(segments)
+        else None
+    )
+    hook_kwargs = {"game_element_hook": hook} if hook is not None else {}
     if follow is not None and needs_in_place_actions(segments):
         # the polyline cannot encode a mid-mission rotation / arrival turn:
         # the segment backend performs the whole program instead
@@ -341,14 +543,22 @@ async def _start_verified(
             "the re-planned remainder needs an in-place action - the segment backend takes over",
         )
         follow = None
+    # A REAL match that reached its limit must never be restarted by an
+    # automatic re-plan / obstacle wait. The console exposes this guard on
+    # its mission context; bare test contexts simply have no guard.
+    allows = getattr(ctx, "game_allows_motion", None)
+    if callable(allows) and not allows():
+        return f"{what}: the game time is over - reset the game clock"
     try:
         if follow is None:
             # simple executor doubles predate the streaming kwarg
-            await executor.start(segments, deadman_ms, paused=paused)
+            await executor.start(
+                segments, deadman_ms, paused=paused, **hook_kwargs
+            )
         else:
             await executor.start(
                 segments, deadman_ms, paused=paused,
-                follow_path=follow, follow_bounds=follow_bounds,
+                follow_path=follow, follow_bounds=follow_bounds, **hook_kwargs,
             )
     except (RuntimeError, ValueError) as exc:
         return f"{what}: {exc}"
@@ -447,6 +657,50 @@ def active_obstacles(
     return merged
 
 
+async def apply_game_element(ctx: MissionContext, action: Dict) -> None:
+    """Apply one strategy erase/spawn action to the LIVE obstacle map.
+
+    Called by the executor when it reaches the action segment (the previous
+    move is already finished). The stored plan request is updated, so every
+    later camera re-plan / wait retry routes on the map that is really on the
+    table now. The console is notified with a ``game_element`` event so its
+    map drops/moves the named marker too.
+    """
+    kind = str(action.get("action") or "").strip().lower()
+    name = str(action.get("name") or "").strip()
+    if kind not in ("erase", "spawn"):
+        raise ValueError(f"unknown game-element action '{kind}'")
+    if not name:
+        raise ValueError("the game-element action has no name")
+    request = ctx.last_plan_request
+    obstacles = list((request or {}).get("obstacles") or [])
+    placed: Optional[Dict] = None
+    if kind == "erase":
+        updated = erase_game_element(obstacles, name)
+        message = f"game element '{name}' erased - the route may pass through its old spot"
+    else:
+        raw = action.get("obstacle")
+        if not isinstance(raw, dict):
+            raise ValueError(f"spawn '{name}' needs an 'obstacle' object")
+        updated = spawn_game_element(obstacles, name, raw)
+        placed = next(
+            (item for item in updated if item.get("name") == name), None
+        )
+        message = f"game element '{name}' placed - the map and the routing grid now include it"
+    if request is not None:
+        request["obstacles"] = updated
+        ctx.last_plan_request = request
+    await ctx.log("info", message)
+    await ctx.emit({
+        "type": "game_element",
+        "data": {
+            "action": kind,
+            "name": name,
+            "obstacle": dict(placed) if placed is not None else None,
+        },
+    })
+
+
 def _route_progress(
     ctx: MissionContext,
     elements: Sequence[Dict],
@@ -537,8 +791,17 @@ async def execute_plan(
     """
     request_elements = list(elements)
     request_goal = goal
-    request_obstacles = [dict(obstacle) for obstacle in obstacles]
+    # identity + unique names first, then the action references; a permanent
+    # obstacle can never be erased or re-spawned by a strategy
+    request_obstacles = normalize_obstacles(obstacles)
+    validate_actions(request_elements, request_obstacles)
     request_options = dict(options_dict or {})
+    #: table fixtures of the CURRENT run: fixed at the first plan and kept
+    #: across camera re-plans, so a transient obstacle that appears in a
+    #: request is never mistaken for a fixture of the setup
+    baseline_obstacles: List[Dict] = [
+        dict(obstacle) for obstacle in request_obstacles if not is_game_element(obstacle)
+    ]
 
     def remember_request(cursor: int = 0) -> None:
         """Store this request as the base for future camera re-plans."""
@@ -550,11 +813,26 @@ async def execute_plan(
             "deadman_ms": deadman_ms,
             "signature": elements_signature(request_elements),
             "cursor": int(cursor),
+            "permanent_obstacles": [dict(obstacle) for obstacle in baseline_obstacles],
         }
 
     async with ctx.plan_lock:
         executor = ctx.executor
         mid_run = executor is not None and executor.is_running()
+        if mid_run and ctx.last_plan_request is not None:
+            # Table fixtures are FIXED while the mission runs: a camera
+            # re-plan / pause retry must reuse the setup it was planned on.
+            # New anonymous obstacles are treated like camera reports (the
+            # sensors may see something new); game elements stay free (that
+            # is what erase/spawn actions are for).
+            if "permanent_obstacles" in ctx.last_plan_request:
+                stored = ctx.last_plan_request.get("permanent_obstacles") or []
+                baseline_obstacles = [dict(obstacle) for obstacle in stored]
+                if not permanents_kept(baseline_obstacles, request_obstacles):
+                    raise ValueError(
+                        "permanent obstacles are locked while the mission executes - "
+                        "stop the run before moving or deleting a table fixture"
+                    )
         was_paused = bool(
             mid_run and executor is not None
             and getattr(executor, "state", "") == EXEC_PAUSED
@@ -562,7 +840,17 @@ async def execute_plan(
         resume = False
         mode = "route"
         cursor = 0
+        pre_stopped = False
         route_elements: List[Dict] = []
+        # obstacles the flat REMAINDER path is checked against; a route-mode
+        # re-plan narrows it to the pieces that cannot change with the
+        # remainder's own erase/spawn actions (see route_check_obstacles)
+        ladder_obstacles: List[Dict] = list(request_obstacles)
+        candidate: Optional[Dict] = None
+        assessed_elements: Optional[Sequence[Dict]] = None
+        assessed_pose: Optional[Tuple[float, ...]] = None
+        assessed_obstacles: Optional[List[Dict]] = None
+        assess_elapsed = 0.0
         if not mid_run and ctx.vision_waiting is not None:
             # a fresh plan (or a manual restart) supersedes a previous wait
             ctx.vision_waiting = None
@@ -586,10 +874,36 @@ async def execute_plan(
             # robot still has to do (the next checkpoint verbatim, or the
             # current stroke's continuation).
             pose_now = ctx.pose()
+            departure_ahead = 0.0
             if mode == "route":
                 cursor, route_elements = _route_progress(
                     ctx, request_elements, preserve_detours=False
                 )
+                # The flat remainder path crosses the old spot of a piece
+                # the mission erases, or the destination of one it spawns:
+                # those pieces are PHASE-dependent (the planner already routed
+                # every leg on the map valid at that point), so neither the
+                # ladder nor the assessment may treat them as solid. The
+                # WHOLE mission is passed, not just the remainder: a spawn
+                # executed a moment ago is behind the cursor, yet the piece it
+                # just placed may sit right beside (or under) the robot - it
+                # must not trigger a pointless stop/re-plan there (strategy3:
+                # the robot stopped after spawning B and drove an extra R82
+                # arc, 2026-11-04).
+                ladder_obstacles = route_check_obstacles(
+                    request_obstacles,
+                    request_elements,
+                    (ctx.last_plan_request or {}).get("obstacles") or [],
+                )
+                # A close-waypoint reverse still ahead owns the mission: the
+                # assessment must compare against the route that finishes the
+                # reverse (the drawing's remainder at the waypoint starts with
+                # the pause and would rotate in place there)
+                remaining_departure = getattr(executor, "remaining_departure_mm", None)
+                if callable(remaining_departure) and pose_now is not None:
+                    departure_ahead = float(
+                        remaining_departure((pose_now[0], pose_now[1])) or 0.0
+                    )
                 head_wp = _head_waypoint(route_elements)
                 previous_wp = _previous_waypoint(request_elements, cursor)
                 if (
@@ -597,10 +911,14 @@ async def execute_plan(
                     and pose_now is not None
                     and math.dist(head_wp, (pose_now[0], pose_now[1])) <= WAYPOINT_WAIT_REACH_MM
                     # let the just-visited waypoint finish its arrival turn
-                    # and drive off before stopping the robot
+                    # and drive off before stopping the robot. The dynamic
+                    # safety bubble stops earlier than the old body gap, so
+                    # this guard must be short enough not to swallow the
+                    # blocked next checkpoint (150 mm still clears the
+                    # in-place arrival turn at the previous waypoint).
                     and not (
                         previous_wp is not None
-                        and math.dist(previous_wp, (pose_now[0], pose_now[1])) < 250.0
+                        and math.dist(previous_wp, (pose_now[0], pose_now[1])) < 150.0
                     )
                     and _waypoint_blocked(
                         head_wp, active_obstacles(ctx, request_obstacles, request_options), request_options
@@ -642,11 +960,16 @@ async def execute_plan(
             # distance is ignored - it may be gone by the time the robot gets
             # there (it usually is another robot); the proximity watchdog
             # re-checks automatically as the robot advances.
-            near = nearby_obstacles(
-                active_obstacles(ctx, request_obstacles, request_options),
-                (pose_now[0], pose_now[1]) if pose_now is not None else None,
-                request_options,
-            )
+            position_now = (pose_now[0], pose_now[1]) if pose_now is not None else None
+            merged_obstacles = active_obstacles(ctx, request_obstacles, request_options)
+            dynamic_all = active_obstacles(ctx, [], request_options)
+            dynamic_near = nearby_obstacles(dynamic_all, position_now, request_options)
+            # Static obstacles keep the body-only ladder (a close waypoint may
+            # legitimately stop right next to one); the MOVING obstacles get
+            # the safety bubble in clip_gap_mm below. Game elements this
+            # remainder erases/spawns are phase-dependent (see
+            # ``route_check_obstacles``) and must not drive the ladder.
+            static_near = nearby_obstacles(ladder_obstacles, position_now, request_options)
             # ---- reaction ladder (cheap, no re-plan yet) -------------------
             # How far along the route is the first REAL blockage (an obstacle
             # the robot's body would drive into)? Far away it is only watched:
@@ -661,19 +984,82 @@ async def execute_plan(
                 (ctx.last_plan or {}).get("path") or [],
                 (pose_now[0], pose_now[1]) if pose_now is not None else (0.0, 0.0),
             )
+            # A moving obstacle fully BEHIND the robot cannot block the
+            # remaining route: its body may still overlap the first route
+            # sample while the robot drives away from it (a following
+            # opponent), and that overlap must not look like a blockage.
+            travel = travel_direction(
+                current_path,
+                position_now,
+                pose_now[2] if pose_now is not None else None,
+            )
+            if travel is not None:
+                dynamic_near = [
+                    obstacle for obstacle in dynamic_near
+                    if not obstacle_behind_robot(obstacle, position_now, travel)
+                ]
             clip_gap, clip_point = clip_gap_mm(
-                current_path, near, request_options,
+                current_path, static_near, request_options,
                 ctx.field["width_mm"], ctx.field["height_mm"],
             )
-            early = clip_gap < math.inf and tight_blockage(
-                clip_point, request_obstacles, request_options, ctx.field
+            # Keep the dynamic bubble strictly INSIDE the configured routing
+            # margin: a strategy may set a small obstacle margin (Game1 uses
+            # 50 mm), and a fixed 100 mm pad would make every legitimate
+            # detour look blocked (the robot would wait forever).
+            ladder_options = PlanOptions.from_dict(request_options)
+            ladder_border, ladder_inflation = clearances(ladder_options)
+            dynamic_pad = min(
+                DYNAMIC_SAFETY_PAD_MM,
+                max(0.0, ladder_inflation - ladder_border - 25.0),
             )
-            if mode == "route" and clip_gap < math.inf and not early and clip_gap > CAUTION_GAP_MM:
+            dynamic_gap, dynamic_point = clip_gap_mm(
+                current_path, dynamic_near, request_options,
+                ctx.field["width_mm"], ctx.field["height_mm"],
+                pad_mm=dynamic_pad, border_pad_mm=0.0,
+            )
+            # A bubble clip at the very START means the robot is ALREADY
+            # inside the safety bubble (an opponent parked beside the route):
+            # stopping cannot prevent anything and used to lock the robot into
+            # a stop -> assess -> re-plan -> restart -> stop loop that ran the
+            # planner back to back (2026-10-27). Only a REAL body clip inside
+            # the stop band keeps the stop; the contact bubble still guards an
+            # actual hit. The robot drives clear instead of freezing.
+            if mode == "route" and dynamic_gap < DYNAMIC_EXIT_MM:
+                body_gap, _ = clip_gap_mm(
+                    current_path, dynamic_near, request_options,
+                    ctx.field["width_mm"], ctx.field["height_mm"],
+                    pad_mm=0.0, border_pad_mm=None,
+                )
+                if body_gap > DYNAMIC_STOP_GAP_MM:
+                    if _note_ladder(ctx, "inside-bubble"):
+                        await ctx.log(
+                            "info",
+                            "the robot is already inside the moving obstacle's safety "
+                            "bubble - driving clear instead of stopping",
+                        )
+                    dynamic_gap = math.inf
+            dynamic_selected = dynamic_gap < clip_gap
+            if dynamic_selected:
+                clip_gap, clip_point = dynamic_gap, dynamic_point
+            caution_gap = DYNAMIC_CAUTION_GAP_MM if dynamic_selected else CAUTION_GAP_MM
+            stop_gap = DYNAMIC_STOP_GAP_MM if dynamic_selected else STOP_GAP_MM
+            early = clip_gap < math.inf and tight_blockage(
+                clip_point, ladder_obstacles, request_options, ctx.field
+            )
+            # ``clip_gap`` is inf when the remaining route does not physically
+            # touch anything: merely having an obstacle NEAR the robot must
+            # not run the candidate planner at all (that used to re-plan on
+            # every 75 mm of progress, saturating the Pi).
+            if mode == "route" and not early and clip_gap > caution_gap:
                 remember_request(cursor)
                 if executor.speed_scale < 1.0:
                     executor.set_speed_scale(1.0)
                     await ctx.log("info", "the route ahead is clear again - full speed")
-                if not quiet_unchanged and _note_ladder(ctx, f"far{(clip_gap // 250):.0f}"):
+                if (
+                    clip_gap < math.inf
+                    and not quiet_unchanged
+                    and _note_ladder(ctx, f"far{(clip_gap // 250):.0f}")
+                ):
                     await ctx.log(
                         "info",
                         f"obstacle {clip_gap:.0f} mm ahead on the route - watching it "
@@ -681,7 +1067,7 @@ async def execute_plan(
                     )
                 assert ctx.last_plan is not None
                 return {**ctx.last_plan, "unchanged": True}
-            if mode == "route" and clip_gap < math.inf and not early and clip_gap > STOP_GAP_MM:
+            if mode == "route" and not early and clip_gap > stop_gap:
                 remember_request(cursor)
                 if executor.speed_scale > CAUTION_SCALE + 1e-9:
                     executor.set_speed_scale(CAUTION_SCALE)
@@ -697,11 +1083,46 @@ async def execute_plan(
             if executor.speed_scale < 1.0:
                 executor.set_speed_scale(1.0)
             ctx.ladder_band = None  # a new approach speaks again
+            # A MOVING obstacle inside the stop band is a safety stop, not a
+            # planning question: halt BEFORE the candidate re-plan runs. The
+            # candidate takes ~0.5-1 s on the Pi, during which the robot used
+            # to keep driving at full speed and close the safety gap (real
+            # incident 2026-10-27). Static obstacles keep the old order.
+            if (
+                mode == "route"
+                and dynamic_gap <= DYNAMIC_STOP_GAP_MM
+                and executor.is_running()
+                and getattr(executor, "state", "") != EXEC_PAUSED
+            ):
+                await executor.stop(reason="waiting for the moving obstacle (safety bubble)")
+                await executor.wait_idle()
+                pre_stopped = True
+                pose_now = ctx.pose() or pose_now
+            if abs(departure_ahead) >= 1.0 and not goal_only and pose_now is not None:
+                # the executor tail keeps the delay AND the reverse departure,
+                # so the candidate route is the one the robot really drives
+                assessed_elements = executor.remaining_elements(
+                    (pose_now[0], pose_now[1])
+                )
+            else:
+                assessed_elements = [] if goal_only else (route_elements or None)
+            assessed_pose = pose_now
+            assessed_obstacles = list(merged_obstacles)
+            assess_started = time.perf_counter()
             affected, candidate, current_length = await _assess_remaining_route(
-                ctx, executor, request_elements, request_goal, near, request_options, mode,
+                ctx, executor, request_elements, request_goal, merged_obstacles,
+                request_options, mode,
                 cursor=cursor,
-                planned_elements=[] if goal_only else (route_elements or None),
+                planned_elements=assessed_elements,
+                check_obstacles=ladder_obstacles,
             )
+            assess_elapsed = time.perf_counter() - assess_started
+            if pre_stopped and not affected:
+                # the robot is already stopped: never leave it standing on an
+                # "unchanged" answer - plan the remainder from the live pose
+                # (the normal re-plan path below, with no wait decision)
+                affected = True
+                candidate = None
             if not affected:
                 remember_request(cursor)
                 if not quiet_unchanged:
@@ -717,7 +1138,9 @@ async def execute_plan(
                 and bool(ctx.vision.active())
             )
             wait_reason = (
-                _wait_instead_of_detour(ctx, candidate, current_length, near, request_options)
+                _wait_instead_of_detour(
+                    ctx, candidate, current_length, merged_obstacles, request_options
+                )
                 if wait_allowed else None
             )
             if wait_reason:
@@ -842,6 +1265,18 @@ async def execute_plan(
 
         options = PlanOptions.from_dict(request_options)
         merged_obstacles = active_obstacles(ctx, request_obstacles, request_options)
+        # The assessment already planned exactly this remainder on exactly
+        # this obstacle map. When the robot did not coast away from the pose
+        # it was assessed at, that candidate IS the plan - planning it a
+        # second time doubled every re-plan (~1 s on the Pi per planner run).
+        reusable = (
+            candidate is not None
+            and assessed_elements is not None
+            and planned_elements == assessed_elements
+            and assessed_pose is not None
+            and math.dist((px, py), (float(assessed_pose[0]), float(assessed_pose[1]))) <= 2.0
+            and merged_obstacles == assessed_obstacles
+        )
 
         def enter_moving_obstacle_wait(reason: str, direct_mm: float = 0.0) -> None:
             """Stop here, but let a camera change retry by itself."""
@@ -857,30 +1292,60 @@ async def execute_plan(
                 reason=reason,
             )
 
-        try:
-            result = await _plan_off_loop(
-                elements=planned_elements,
-                start_pose=(px, py, pth),
-                goal=request_goal,
-                obstacles=merged_obstacles,
-                options=options,
-                field_width_mm=ctx.field["width_mm"],
-                field_height_mm=ctx.field["height_mm"],
+        plan_started = time.perf_counter()
+        if reusable:
+            assert candidate is not None
+            result = candidate
+        else:
+            try:
+                result = await _plan_off_loop(
+                    elements=planned_elements,
+                    start_pose=(px, py, pth),
+                    goal=request_goal,
+                    obstacles=merged_obstacles,
+                    options=options,
+                    field_width_mm=ctx.field["width_mm"],
+                    field_height_mm=ctx.field["height_mm"],
+                )
+            except ValueError:
+                if mid_run and executor is not None and ctx.vision.active():
+                    enter_moving_obstacle_wait(
+                        "the moving obstacle blocks the remaining route"
+                    )
+                    await ctx.log(
+                        "warn",
+                        "the moving obstacle blocks the remaining route - waiting for "
+                        "it to move; the robot resumes by itself",
+                    )
+                    return {"waiting": True}
+                raise
+        plan_elapsed = (
+            assess_elapsed if reusable else time.perf_counter() - plan_started
+        )
+        # Game elements are PHASE-dependent: the remainder may legitimately
+        # drive through the old spot of a piece an earlier ``erase`` action
+        # removed (or around one a ``spawn`` places later), even though the
+        # state map still lists it. The planner already routed every leg on
+        # the obstacle map valid at that point, so this safety net skips the
+        # pieces the remainder itself erases/spawns and keeps checking the
+        # rest (permanents, camera reports, opponent poses and game elements
+        # the mission does not touch). Checking a pre-action element here
+        # stopped the robot right after an erase with "replanned path still
+        # intersects an obstacle".
+        action_names = {
+            str(element.get("name", "")).strip().casefold()
+            for element in request_elements
+            if str(element.get("kind", "")).strip().lower() in ("erase", "spawn")
+        }
+        clip_obstacles = [
+            obstacle for obstacle in merged_obstacles
+            if not (
+                is_game_element(obstacle)
+                and str(obstacle.get("name", "")).strip().casefold() in action_names
             )
-        except ValueError:
-            if mid_run and executor is not None and ctx.vision.active():
-                enter_moving_obstacle_wait(
-                    "the moving obstacle blocks the remaining route"
-                )
-                await ctx.log(
-                    "warn",
-                    "the moving obstacle blocks the remaining route - waiting for "
-                    "it to move; the robot resumes by itself",
-                )
-                return {"waiting": True}
-            raise
+        ]
         clip = first_body_clip(
-            result.get("path") or [], merged_obstacles,
+            result.get("path") or [], clip_obstacles,
             *body_geometry(options),
             ctx.field["width_mm"], ctx.field["height_mm"],
         ) if mid_run else None
@@ -911,11 +1376,22 @@ async def execute_plan(
                 "replanned path still intersects an obstacle's robot-clearance area; "
                 "the robot remains stopped"
             )
-        # a waypoint the planner moved out of a clearance zone is the point
-        # the cursor and later re-plans must use (the original is unreachable)
-        request_elements = _apply_resolved_waypoints(
-            request_elements, result.get("resolved_waypoints") or []
+        # A waypoint the planner moved out of a clearance zone is the point
+        # the cursor and later re-plans must use (the original is
+        # unreachable). ``resolved_waypoints`` has one entry per waypoint of
+        # the elements the planner actually PLANNED; that is the whole
+        # drawing only when the whole drawing was planned. A mid-run re-plan
+        # plans a REMAINDER - stamping its (fewer) points into the stored
+        # mission rewrote the FIRST waypoints with the tail's coordinates,
+        # producing duplicate checkpoints that looped the route back over
+        # itself (2026-10-27 "generated garbage").
+        resolved = result.get("resolved_waypoints") or []
+        request_waypoints = sum(
+            1 for element in request_elements
+            if str(element.get("kind", "stroke")) == "waypoint"
         )
+        if resolved and len(resolved) == request_waypoints:
+            request_elements = _apply_resolved_waypoints(request_elements, resolved)
         ctx.last_plan = result
         # remember the console request: a camera report arriving mid-run
         # re-plans from exactly these elements, not from the previous plan
@@ -950,7 +1426,9 @@ async def execute_plan(
                 "warn",
                 "dynamic obstacle - the robot stopped at "
                 f"({px:.0f}, {py:.0f}) mm and the remaining route was re-planned "
-                f"({result['stats']['n_segments']} segments): "
+                f"in {plan_elapsed:.2f} s ({result['stats']['n_segments']} segments"
+                + (", assessment reused" if reusable else "")
+                + "): "
                 + ("PAUSED - press Resume when the table is clear" if resume else "it re-routes and continues"),
             )
             # the console map must show the REGENERATED route the robot will
@@ -959,7 +1437,7 @@ async def execute_plan(
 
     await ctx.log(
         "info",
-        f"plan ready: {result['stats']['n_segments']} segments "
+        f"plan ready in {plan_elapsed:.2f} s: {result['stats']['n_segments']} segments "
         f"({result['stats']['n_gotos']} GOTO, {result['stats']['n_actions']} action), "
         f"{result['stats']['length_mm'] / 1000.0:.2f} m, ~{result['stats']['est_s']:.0f} s",
     )
@@ -976,6 +1454,7 @@ async def _assess_remaining_route(
     mode: str,
     cursor: int = 0,
     planned_elements: Optional[Sequence[Dict]] = None,
+    check_obstacles: Optional[Sequence[Dict]] = None,
 ) -> Tuple[bool, Optional[Dict], float]:
     """Would the new obstacle map actually change what the robot has to drive?
 
@@ -991,6 +1470,10 @@ async def _assess_remaining_route(
     compromised approach is picked up again as soon as the waypoint frees
     up). A mere LENGTH difference without a clip or a missed waypoint is
     re-fit noise and leaves the robot driving.
+
+    ``check_obstacles`` defaults to ``obstacles``; the caller passes the
+    phase-aware subset (:func:`route_check_obstacles`) around the flat
+    remainder path while the candidate is still planned on the full map.
     """
     last_plan = ctx.last_plan or {}
     path = last_plan.get("path") or []
@@ -999,8 +1482,9 @@ async def _assess_remaining_route(
         return (True, None, 0.0)  # no ruler to compare against: be conservative
     position = (pose[0], pose[1])
     options = PlanOptions.from_dict({**(options_dict or {}), "resume_mid_mission": True})
-    merged = list(obstacles)  # the caller already merged + proximity-filtered
+    merged = list(obstacles)  # the caller already merged console + camera obstacles
     field_w, field_h = ctx.field["width_mm"], ctx.field["height_mm"]
+    check = list(check_obstacles) if check_obstacles is not None else merged
 
     if mode == "drawing":
         progress = path_fraction(path, position)
@@ -1032,7 +1516,7 @@ async def _assess_remaining_route(
         )
     except ValueError:
         # cannot even plan what is left: stop only when it is physically blocked
-        affected = route_blocked(current_path, merged, options, field_w, field_h)
+        affected = route_blocked(current_path, check, options, field_w, field_h)
         return (affected, None, current_length)
     candidate_length = candidate["stats"]["length_mm"]
     tolerance = max(100.0, 0.02 * current_length)
@@ -1041,7 +1525,7 @@ async def _assess_remaining_route(
     # obstacle can be avoided with a detour only a few cm longer than the
     # drawn line (below the tolerance) and the robot would otherwise drive
     # straight into it until it reaches the clearance zone.
-    if _clips_obstacle(current_path, merged, options, field_w, field_h):
+    if _clips_obstacle(current_path, check, options, field_w, field_h):
         return (True, candidate, current_length)
     # A length difference alone matters only when the CANDIDATE clips: a
     # mid-run re-plan re-fits the SAME corridor (ARCs are re-derived from
@@ -1050,7 +1534,7 @@ async def _assess_remaining_route(
     # watchdog swapped the whole program ~1 s after every start and the
     # executed path drifted away from the planned one.
     if abs(candidate_length - current_length) > tolerance and _clips_obstacle(
-        candidate.get("path") or [], merged, options, field_w, field_h
+        candidate.get("path") or [], check, options, field_w, field_h
     ):
         return (True, candidate, current_length)
     # the mission's NEXT WAYPOINT must still be really visited: while an
@@ -1084,7 +1568,7 @@ def _wait_instead_of_detour(
     if candidate is None:
         return None  # let the normal re-plan path speak (it decides/reports)
     options = PlanOptions.from_dict({**(options_dict or {}), "resume_mid_mission": True})
-    merged = list(obstacles)  # the caller already merged + proximity-filtered
+    merged = list(obstacles)  # the caller already merged console + camera obstacles
     field_w, field_h = ctx.field["width_mm"], ctx.field["height_mm"]
     if _clips_obstacle(candidate.get("path") or [], merged, options, field_w, field_h):
         return "there is no way around it (every detour still drives through it)"
@@ -1151,10 +1635,18 @@ async def resume_from_wait(ctx: MissionContext) -> bool:
         if pose is None:
             return False
         options = PlanOptions.from_dict({**(waiting.get("options") or {}), "resume_mid_mission": True})
+        waiting_obstacles = active_obstacles(
+            ctx, waiting.get("obstacles") or [], waiting.get("options") or {}
+        )
         merged = nearby_obstacles(
-            active_obstacles(ctx, waiting.get("obstacles") or [], waiting.get("options") or {}),
+            waiting_obstacles,
             (pose[0], pose[1]),
             waiting.get("options") or {},
+        )
+        check_obstacles = route_check_obstacles(
+            waiting_obstacles,
+            request.get("elements") or elements,
+            waiting.get("obstacles") or [],
         )
         field_w, field_h = ctx.field["width_mm"], ctx.field["height_mm"]
         forced = time.monotonic() - float(waiting.get("started_at") or 0.0) >= WAIT_MAX_S
@@ -1183,7 +1675,9 @@ async def resume_from_wait(ctx: MissionContext) -> bool:
                 )
                 probe_path = probe.get("path") or []
                 reachable = (
-                    not _clips_obstacle(probe_path, merged, options, field_w, field_h)
+                    not _clips_obstacle(
+                        probe_path, check_obstacles, options, field_w, field_h
+                    )
                     and route_distance_mm(probe_path, head_wp) <= WAYPOINT_VISIT_TOL_MM
                 )
             except ValueError:
@@ -1218,7 +1712,9 @@ async def resume_from_wait(ctx: MissionContext) -> bool:
                 )
             except ValueError:
                 return False  # still nothing plannable: keep waiting
-        if _clips_obstacle(candidate.get("path") or [], merged, options, field_w, field_h):
+        if _clips_obstacle(
+            candidate.get("path") or [], check_obstacles, options, field_w, field_h
+        ):
             return False  # physically impassable right now: keep waiting
         direct = float(waiting.get("direct_mm") or 0.0)
         length = float(candidate["stats"]["length_mm"])

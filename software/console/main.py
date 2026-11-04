@@ -27,6 +27,7 @@ from fastapi.staticfiles import StaticFiles
 from software import __version__
 from software.config import settings
 from software.core.mission import watcher
+from software.core.mission.game_time import game_tick_loop
 
 from .api.routes import router
 from .api.ws import hub, vision_endpoint
@@ -50,12 +51,15 @@ async def lifespan(_: FastAPI):
     # re-check while driving: an obstacle too far to matter becomes close as
     # the robot advances (a parked robot sends no new report)
     vision_proximity = asyncio.create_task(watcher.proximity_loop(state))
+    # match clock: fire timed actions and stop a REAL run at the limit
+    game_clock = asyncio.create_task(game_tick_loop(state.game_tick))
     await state.log("info", f"RPI service started (transport={settings.transport})")
     try:
         yield
     finally:
         vision_sweep.cancel()
         vision_proximity.cancel()
+        game_clock.cancel()
         # stop the sensor tasks, telemetry and close the link in one place
         await state.session.stop()
 

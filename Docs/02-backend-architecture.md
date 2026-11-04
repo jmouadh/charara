@@ -38,12 +38,13 @@ charara/                            (repository root)
 `-- software/                       THE PYTHON PACKAGE
     |-- config.py                   Settings from env (shared by console + brain)
     |-- core/                       pure domain - no I/O, no third-party imports
-    |   |-- navigation/             geometry, grid, clearance, options,
+    |   |-- navigation/             geometry, grid, clearance, polygon, options,
     |   |                           trajectory, replan, velocity
     |   |                           pursuit, tracking, sim (path following, B)
     |   |-- localization/           kinematics, kalman, service (fused pose:
     |   |                           wheels + gyro + camera, gating, status)
-    |   |-- world/                  VisionStore (obstacles) + PoseStore (robots)
+    |   |-- world/                  VisionStore (obstacles) + PoseStore (robots) + map doc / PDF raster
+    |   |                           + MapConfig (table, artwork, start zones)
     |   `-- mission/
     |       |-- interfaces.py       ports: RobotIO, RobotIOError, MissionContext
     |       |-- executor.py         runs a motion program on a robot port
@@ -63,6 +64,7 @@ charara/                            (repository root)
     |   |   |-- deps.py             client access + error mapping
     |   |   |-- models.py           pydantic request/response bodies
     |   |   |-- system.py           health, mode, state, field, pose, board log, display, trace
+    |   |   |-- map.py              map document: field, artwork, start zones
     |   |   |-- motion.py           manual moves, execution control, E-STOP
     |   |   |-- planning.py         plan / re-plan, last plan
     |   |   |-- settings.py         limits, watchdog, settings registers
@@ -112,10 +114,18 @@ board; tests and the brain use the same port.
 See [03 - Planner & algorithms](03-planner-algorithms.md) for the formulas.
 Modules: `geometry` (RDP, circle fitting, line/arc segmentation, fillets,
 resampling), `grid` (occupancy grid + Theta*), `clearance` (obstacle merge,
-body inflation, grid build), `options` (`PlanOptions`, every planner knob),
-`trajectory` (`plan()`: elements -> chained ARC/GOTO/TURN/PAUSE program),
-`replan` (remaining-path slicing, path fraction, blockage checks),
+body inflation, grid build), `polygon` (custom shapes: inside test, distance
+to the outline, rect/polygon distance), `options` (`PlanOptions`, every planner
+knob), `trajectory` (`plan()`: elements -> chained ARC/GOTO/TURN/PAUSE
+program), `replan` (remaining-path slicing, path fraction, blockage checks),
 `velocity` (trapezoidal profile with lateral limit).
+
+Obstacles come in three shapes - `rect` (corner + size), `circle`
+(centre + radius) and `polygon` (a closed vertex list, at least 3 points) -
+and every consumer handles all three: the routing grid (`add_polygon`), the
+stop clearances, the rotated-body check (`polygon_rect_distance`, which also
+understands concave outlines) and the mid-run reactions
+(`obstacle_distance_mm`).
 
 ### 3.2 Localization (`core/localization/`)
 
@@ -136,12 +146,29 @@ odometry:
   standing robot cannot drift. `add_gyro_yaw_rate(omega, t)` switches
   `status().mode` from `wheel` to `wheel+gyro` when gyro data is fresh.
 
-### 3.3 World model (`core/world/vision.py`)
+### 3.3 World model (`core/world/`)
 
 `VisionStore` keeps the newest camera snapshot (obstacles + TTL + version +
 quantised fingerprint so identical refreshes are not "changes") and
 `merged_obstacles(console_obstacles, store)` merges console-drawn and camera
 obstacles for every plan.
+
+`MapConfig` is the editable map document (`MAP_CONFIG_FILE`, default
+`<repo>/map/map.json`, `/data/map/map.json` in docker): the play-area size,
+the background artwork choice, one colour per team and the team **starting
+zones** - each with its type (primary/secondary) and, for a primary zone, the
+exact robot spawn pose. It normalises everything it reads (zones clamped to
+the table, a spawn clamped inside its zone, unknown teams dropped) and writes
+atomically. A primary zone's spawn becomes the team match start, so the table
+setup lives in the document instead of the environment; `TEAM_START_*` is
+only the fallback.
+
+`pdf_background` rasterises a PDF artwork (Eurobot publishes the table as a
+PDF) with poppler's `pdftoppm`: page 1 scaled to ~3000 px wide, written to
+`MAP_CACHE_DIR` (`/data/map/cache` in docker) under a key built from the
+file's mtime/size and the width, with a temp stem + rename so a concurrent
+request never reads a half-written raster. A re-exported PDF therefore
+re-renders by itself and older renders of the same file are pruned.
 
 ### 3.4 Mission (`core/mission/`)
 
@@ -297,7 +324,7 @@ pose. The console saves/loads them (`/api/strategies`, storage in
 | `I2C_BUS` / `I2C_ADDRESS` | `1` / `0x0A` | board on the bus |
 | `I2C_RETRIES` / `I2C_RETRY_DELAY_MS` | `5` / `5` | retry policy |
 | `FIELD_WIDTH_MM` / `FIELD_HEIGHT_MM` | `3000` / `2000` | play area |
-| `DEFAULT_SPEED_MM_S` / `DEFAULT_ACCEL_MM_S2` / `DEFAULT_DECEL_MM_S2` / `DEFAULT_LAT_ACCEL_MM_S2` | `500` / `700` / `700` / `300` | speed / accel / decel / lateral defaults |
+| `DEFAULT_SPEED_MM_S` / `DEFAULT_ACCEL_MM_S2` / `DEFAULT_DECEL_MM_S2` / `DEFAULT_LAT_ACCEL_MM_S2` | `350` / `700` / `700` / `300` | speed / accel / decel / lateral defaults |
 | `DEFAULT_GOTO_STEP_MM` / `DEFAULT_FIT_TOL_MM` | `250` / `8` | planner defaults (also `DEFAULT_INFLATION_MM` 180, `DEFAULT_GRID_MM` 50, `DEFAULT_STEP_MM` 50) |
 | `TELEMETRY_HZ` | `10` | odometry poll rate (also the deadman feed) |
 | `DEADMAN_MS` / `EXEC_TIMEOUT_SLACK_S` | `1500` / `8` | hardware watchdog / timeout slack |

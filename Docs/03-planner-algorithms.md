@@ -32,18 +32,41 @@ elements: [
   {"kind": "waypoint", "x": ..., "y": ...},          // must-pass point
   {"kind": "rotate",   "angle_deg": 90},         // + = CCW
   {"kind": "pause",    "seconds": 2},
-  {"kind": "release"}                           // release stepper drivers
+  {"kind": "release"},                          // release stepper drivers
+  {"kind": "erase", "name": "A"},                // remove game element A
+  {"kind": "spawn", "name": "A",                 // place it back (geometry
+   "obstacle": {"kind":"rect","x":...,"y":...,"w":...,"h":...}}  // is captured here)
 ]
 goal:      {"x": ..., "y": ..., "theta_deg": 90|null}
-obstacles: [{"kind":"rect","x","y","w","h"} | {"kind":"circle","x","y","r"}]
+obstacles: [{"kind":"rect","x","y","w","h","type":"permanent"}
+            | {"kind":"circle","x","y","r","type":"game_element","name":"A"}
+            | {"kind":"polygon","points":[[x,y],…],"type":"permanent"}]
 options:   PlanOptions (below, all optional)
 ```
+
+`type` defaults to `permanent` (legacy documents included). Only
+`game_element` obstacles have a `name`; names are unique. The planner applies
+each `erase`/`spawn` **in mission order**: the routing grids are rebuilt from
+the new obstacle list at that point, so the legs before the action were routed
+with the piece present and the legs after it with the piece gone (or at its new
+geometry). The action itself becomes a `game_element` segment that the executor
+runs between two motions - the streaming backend is not used for such a plan.
+A permanent obstacle can never be an action target.
+
+`obstacles` is the map at the **start** of the mission, never a post-action
+snapshot: a `spawn` payload carries the piece's **destination**, while the
+piece listed in `obstacles` is still where it initially stands. The console
+relies on this split for programmable placements - drawing a spawn destination
+(BOX/Zone/Polygon with **Spawn step**, or **Spawn element**) does not move the
+map marker, and the marker only follows when the executor runs the action.
+This is why a strategy replays correctly from its saved document: the initial
+placement is preserved and each run recreates the same timeline.
 
 `PlanOptions` (defaults):
 
 | Option | Default | Meaning |
 |---|---|---|
-| `speed_mm_s` | 500 | cruise speed used for the whole plan |
+| `speed_mm_s` | 350 | cruise speed used for the whole plan |
 | `turn_speed_mm_s` | 150 | speed of in-place turns (rotations) |
 | `min_speed_mm_s` | 100 | floor sent to the board (its creep speed) |
 | `accel_mm_s2` / `decel_mm_s2` | 700 / 700 | trapezoidal profile |
@@ -59,6 +82,8 @@ options:   PlanOptions (below, all optional)
 | `robot_width_mm` / `robot_height_mm` | 300 / 300 | body size (position = centre) |
 | `obstacle_margin_mm` | 150 | full safety clearance around obstacles used by the ROUTER |
 | `waypoint_margin_mm` | 0 (console) / unset (API) | extra stop clearance around waypoints; 0 = half the larger body side, unset = legacy full routing clearance |
+| `turn_margin_mm` | 30 | extra room on top of the body's turning circle (`half_diagonal + 6`) that a planned in-place turn needs - it sizes the straight escape at the start and the departure move after a close stop |
+| `smooth_launch` | `true` | when the mission would open with an in-place turn, launch with a straight along the current heading plus ONE arc onto the first leg instead (`_launch_fillet`); `false` restores the pivot (shortest route, but the robot stops to rotate) |
 | `waypoint_cut_mm` | 50 | how "deep" a fillet may sweep past a waypoint (0 = exact) |
 | `inflate_mm` | 0 | legacy override of the obstacle inflation (0 = derive) |
 | `grid_mm` | 50 | occupancy grid resolution |
@@ -122,9 +147,16 @@ Three grids are built per plan from the robot geometry:
 Waypoints and goals are **stop points**: their position is first projected out
 of every inflated zone to the closest fully-clear point
 (`clearance.closest_clear_point`, Euclidean projection onto the rounded
-rectangle / circle), then the route must reach that exact point on the full
-grid. The console applies the same projection when a waypoint or goal is
-placed, so the point the operator sees is the point the planner uses.
+rectangle / circle / polygon), then the route must reach that exact point on
+the full grid. The console applies the same projection when a waypoint or goal
+is placed, so the point the operator sees is the point the planner uses.
+
+A **custom shape** (`kind: "polygon"`, at least 3 vertices, closed
+automatically) is measured with its real outline: the grid blocks every cell
+whose centre is inside it or within the inflation, the stop clearances use
+`distance_to_polygon` and the rotated body test uses
+`polygon_rect_distance` (containment plus edge crossings, so a concave
+shape's notch stays free).
 
 ## 4. Routing - safe and short (`trajectory._route`)
 
@@ -220,6 +252,28 @@ a body corner into the obstacle: the arrival angle is performed at the
 stand-off (the GOTO's final heading) and the robot then drives the last
 stretch already facing the commanded angle.
 
+When the arrival angle points **across the approach** (more than
+`WAYPOINT_REVERSE_APPROACH_DEG`, 90 deg, away from the natural line - or the
+point cannot turn in place at all) and the forward leg along that angle is
+blocked, the last stretch is driven **in REVERSE**: the stand-off is chosen
+on the side the robot will FACE (`WAYPOINT_REVERSE_MIN_MM`, 300 mm, of
+comfortable room preferred), the robot pivots to the arrival angle there,
+and a negative `DRIVE` lands it exactly on the point with the body already
+at the commanded angle - no pivot on the close waypoint. Strategy3's second
+waypoint (2026-11-04: `(1175, 475)` mm, -180 deg, 285 mm from the element)
+used to pivot ~95 deg there; it now turns at `(870, 475)` mm and backs up
+305 mm. Warning: *"... the robot turns to the arrival angle at that
+stand-off and reaches the point in REVERSE"*.
+
+The stand-off search does not stop at the first mathematically turn-safe
+point: it prefers one with `WAYPOINT_STANDOFF_TURN_MARGIN_MM` (100 mm) of
+extra clearance from the border and obstacles, because the final in-place
+turn happens there. The real last waypoint `(1390, 1850)` mm with a 90 deg
+arrival used to pivot at y = 1775 mm - only 225 mm from the border, leaving
+7 mm under the body corner. It now turns at y = 1675 mm (325 mm of border
+clearance) and drives the last 175 mm straight. The first turn-safe point
+remains the fallback when no comfortable stand-off exists.
+
 A mission that CONTINUES after such a close waypoint still reaches the
 point **exactly**. The departure is planned as a straight longitudinal move
 (`trajectory` program step `depart`, emitted as a `DRIVE` segment): the
@@ -232,6 +286,60 @@ departure point; the join point itself is required to be turn-safe too, so
 the merge cannot swing the body into the border. If no longitudinal escape
 exists at all (a pocket), only then is the stop moved to the closest
 turn-safe point.
+
+**Turn clearance (the margin on every planned turn).** A planned in-place
+turn only happens where the centre has `half_diagonal + ROTATION_PAD_MM
+(6 mm) + turn_margin_mm` of room, borders included. `turn_margin_mm`
+(default 30, Robot tab *Turn clearance (extra)*) is the operator's safety
+margin: the departure move above therefore ends where the body can rotate
+with that room to spare (the reported case: a reverse of 75 mm left only
+14 mm, so it is now 105 mm), and the same rule sizes the move described
+next.
+
+**Starting against the border.** A mission whose first node needs a heading
+change used to rotate IN PLACE at the robot pose - and a robot waiting in
+its start box sweeps a body corner out of the table doing so (the start
+point was even projected to a "closest allowed point", so the plan began
+somewhere the robot was not). The opening is handled in three steps:
+
+1. **Launch curve (never a pivot)** - the whole opening (any leading
+   in-place turns plus the straight legs they fed) is replaced by a short
+   straight along the CURRENT heading and ONE arc that joins the line into a
+   route node tangentially (`_launch_fillet`). The router emits a node every
+   `goto_step_mm`, so the collinear ones behind the first are folded into ONE
+   target (a node 250 mm away cannot be joined tangentially without looping).
+   The (lead, radius) pair is scanned: the arc must exit on the heading the
+   route leaves the node with (otherwise the runtime would stop there to
+   correct the kink), must clear the table with the rotated body, and must
+   not cost more than `600 mm` over the straight it replaces - past that the
+   pivot is the honest answer (a robot facing away next to an obstacle would
+   otherwise drive a 3 m loop). A comfortable radius (half the drawn-corner
+   radius) always beats a shorter, tighter arc; the bare `arc_min_radius_mm`
+   is only used when no target offers anything better. `smooth_launch=false`
+   restores the old pivot. Warning: *"the mission launches with a 60 mm
+   straight then one 217 deg arc (R 60 mm) instead of a 160 deg in-place turn
+   (no stop at the start)"*.
+2. **Woven launch** - when the first drawn geometry is a curve, the opening
+   becomes ONE tangent connector arc that leaves holding the current
+   heading (`_launch_weave`): the robot drives forward and curves, no
+   in-place turn at all.
+3. **Straight escape** - when no such arc exists (waypoints, straight
+   strokes, tight geometry) and the robot cannot rotate where it stands, the
+   plan starts with a straight longitudinal move along the current heading
+   (forward first - the robot faces the field at the start) to the first
+   point where the full turn clearance fits, and turns there. Warning: *"the
+   robot starts too close to the border/obstacle to turn in place - a
+   straight forward move of N mm to (x, y) mm comes first ..."*. A stroke
+   that was drawn **from the robot pose** is joined where the robot can
+   actually meet it: the point must lie within `STROKE_JOIN_MAX_TURN_DEG`
+   (60 deg) of the escape direction **and** within
+   `STROKE_JOIN_MAX_KINK_DEG` (20 deg) of the drawing's own heading. Without
+   that test the projection of the escape end onto the stroke's first leg can
+   land behind the escaped pose, and the plan drives back and hooks onto the
+   drawing it just left - the reported "non-sense first movements".
+
+The second pass only runs when the first one cannot weave, so the smooth
+launch is never lost: the plan is built twice only in the tight-start case.
 
 If the commanded final heading cannot be reached by a straight leg (e.g. it
 runs parallel to the wall: the straight line would keep the same wall
@@ -306,7 +414,8 @@ right", 2026-10-01).
   **Close waypoints bypass this weave.** When `waypoint_margin_mm` is
   configured and the point stands inside the routing margin, the planner
   does not try to swing an arc into it: it searches the reverse final
-  heading for a stand-off that is turn-safe and fully route-reachable, marks
+  heading for a stand-off that is turn-safe with an extra rotation margin
+  (`WAYPOINT_STANDOFF_TURN_MARGIN_MM`) and fully route-reachable, marks
   that leg GOTO-only (`close_waypoint`) and drives a straight final leg.
   This also forces the segment backend in the executor - the streaming
   follower would cut the stand-off corner towards the obstacle.
@@ -582,6 +691,22 @@ so distance-to-vertex over-stated a local cut by up to half a chord and
 rejected good connectors (measured 36.8 mm where the true cut was 1.6 mm -
 loaded strategy, 2026-10-09).
 
+The legality gate is the routing grid first, then the **exact rotated body**
+(`clearance.first_body_clip`). A route re-routed at body clearance (tier 3)
+may legitimately use part of the configured obstacle margin; a connector that
+stays within the 24 mm cut cap there is physically clear even when the margin
+grid rejects it. Without that fallback the planner pivoted between a
+near-straight ARC and the curve in the corridor next to an obstacle (real plan,
+2026-10-22: R = 28643 mm -> R = 415 mm, an in-place 7.4 deg "dance"). The exact
+body check still forbids touching an obstacle or leaving the field, so the
+fallback never weakens collision safety.
+
+The rounding pass runs **before** the straight merge (`_merge_straight_runs`):
+a straight that has already become one GOTO has no entry tangent for a
+connector to join, which left a second pivot at the curve -> straight exit.
+Connector arcs are tagged `junction_connector` and are never folded into that
+straight - they are the tangent joints themselves.
+
 A junction keeps its stop-and-pivot when none of the three constructions
 applies, or the break is too big (`> ARC_CONNECT_MAX_DEG = 55 deg`). Those are
 tight manoeuvres anyway (the wheels must scrub).
@@ -652,7 +777,14 @@ shows the route around everything known.)
      drawing while mid-detour, and a half-driven arc contributes only its
      exit point (its start lies behind the robot), so repeated obstacle
      changes cannot ping-pong the robot backwards. The re-fit of the smooth
-     route is stable (measured drift <= ~20 mm per generation).
+     route is stable (measured drift <= ~20 mm per generation). A
+     close-waypoint **hold** is part of that program: the DELAY (and a motor
+     release) placed at the waypoint and the signed reverse `DRIVE` behind it
+     are kept together, so a re-plan landing during the delay still backs the
+     robot up to the turn-safe point **before** any rotation. Losing the
+     reverse made the re-planned route rotate on the close waypoint, clip the
+     wall with a body corner and leave the robot stopped for good
+     (2026-10-23).
    * **edited mission**: `slice_remaining_elements` trims the new drawing at
      the point nearest to the robot (progress prior from the running plan's
      path for self-crossings), keeps everything after it verbatim and plans

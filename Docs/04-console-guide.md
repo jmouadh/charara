@@ -12,13 +12,12 @@ the Tailscale `vpn` sidecar) or `http://127.0.0.1:8090` (dev server).
 |         theme/full screen actions            |        field canvas     |
 |----------------------------------------------|   (+ dashed camera      |
 | Left panel (resizable, 320 px default)       |    obstacles, ghost,    |
-|  Mission tab:  Tools - Sequence - Mission    |    plan preview)        |
-|  Config tab:   Geometry - Path options -     |                         |
-|                Display - Field               |                         |
-|  Calibration:  robot settings - drive/turn   |                         |
-|                tests - board error panel     |                         |
-|  Clear path / Clear obstacles under the tabs |                         |
-+----------------------------------------------|                         |
+|  Mission:  Tools - Sequence - Mission        |    plan preview)        |
+|  Clear path / Clear obstacles                |                         |
+|                                              | Settings rail (right):  |
+|                                              |  Robot - UI - Map -     |
+|                                              |  Calibrate - Tests      |
++----------------------------------------------+-------------------------+
 |              I2C monitor (bottom, collapsible)|                        |
 +----------------------------------------------+-------------------------+
 ```
@@ -61,6 +60,8 @@ or turned into a circle at any width.
 | **ROBOT** | board answers on the link |
 | **state** | motion state (IDLE / DRIVE / TURN / STRAFE / GOTO / ARC / FAULT / E-STOP) |
 | **EXEC** | execution progress `EXEC running 12/48`; hidden while idle |
+| **task timer** | a stopwatch pill in the status row: the duration the plan is **expected** to take (`≈ 7.40 s`, from the last plan - so it follows drawing, waypoints, a loaded strategy…), then, from the **Execute** press, a clock that starts at **0.00 s** and runs while the task executes; it **freezes on the final time** when the run ends (a mid-run re-plan or a wait keeps counting - the task is not over). Indigo with a turning dial while it runs, slate when it idles (never the "all good" green of the status pills). `mm:ss.cc` from one minute up |
+| **game timer** | the match clock configured in **Game > Game time**: remaining time (overtime shows `+`), teal while running, **red inside the configured warning window** and solid red at the limit. In MOCK overtime the red pill keeps a `!` warning mark because the run continues; a REAL run is stopped. Hidden when the duration is 0. |
 | **full screen** (top-right) | toggles browser full screen (the whole console, F11-like); the icon flips to *exit*, Escape leaves too |
 | **moon / sun** (top-right) | switches between the light and dark interfaces; the UI tab's **Appearance** group also offers **System** (follows the operating system). The choice is stored in the browser. |
 
@@ -68,7 +69,7 @@ or turned into a circle at any width.
 
 | Tool | What it does |
 |---|---|
-| **Pose** | place the robot *by hand*: click its position, then **drag away from the point to aim the heading - the angle value follows your cursor** (theta pill at the arrow tip). A popup next to the point has editable **X / Y / theta** fields (typing moves the dashed marker live; clamped to the field, theta wrapped to +/-180 deg) and **Validate** (same as *Set Pose*; Enter works too). x or Esc cancels. Validating tells the UI **and** the board where the robot is - nothing moves. |
+| **Pose** | place the robot *by hand*: click its position, then **drag away from the point to aim the heading - the angle value follows your cursor** (theta pill at the arrow tip). A popup next to the point has editable **X / Y / theta** fields (typing moves the dashed marker live; theta wrapped to +/-180 deg) and **Validate** (same as *Set Pose*; Enter works too). x or Esc cancels. Validating tells the UI **and** the board where the robot is - nothing moves. The point follows the **Pose clearance** (Robot tab, default 0): like a waypoint it may stand with the robot **edge on the field border** and is pushed out of the drawn obstacles by the same margin. |
 | **Draw** | freehand/polyline drawing; the start snaps to the robot or the previous path end within 250 mm. Consecutive paths are connected by routed connector legs. The **Draw speed** box sets the per-step speed of the next path(s); empty = the system speed. |
 | **Goal** | click to place the goal, drag away to aim the arrival heading theta. A popup opens next to the marker with editable **X / Y / theta** (empty theta = no arrival heading) plus **Apply**, delete and close (Enter applies, Esc closes without touching the goal). Clicking an already placed goal - with any tool except Erase and Goal - reopens the same popup; drag pans the map as usual when the goal is only clicked. The goal leg is routed around obstacles and the goal is clamped out of the border/obstacle clearance (it is a stop point, like a waypoint). |
 | **Waypoint** | click near a path -> the waypoint snaps to its nearest point and **splits the path there**; click away -> free waypoint. **Keep the pointer down and drag away from the point to aim the arrival angle** (exactly like Pose/Goal; the arrow follows the pointer, and `combine with the approach` is enabled). The **Waypoint speed** box sets the per-step speed of the next waypoint(s); empty = system speed. Click an existing waypoint for the popup (X/Y, arrival angle, speed, combine). The robot *sweeps* through waypoints (within ~5 cm) unless `waypoint_cut_mm = 0` (exact crossing). A waypoint is a **stop point** with its own clearance: **Robot > Waypoint clearance** (extra mm over half the robot height; 0 = 150 mm for a 300 mm body). The point is clamped out of the field border and every obstacle's waypoint clearance. A point inside the routing margin is reached by a **straight final leg**; if it is too close to turn in place, an arrival angle is performed at a safe stand-off BEFORE the final leg. If the mission continues from that point, the robot **reaches it exactly**, then reverses (or moves forward) to a turn-safe point, rotates and continues - it never rotates on the tight waypoint. |
@@ -76,11 +77,31 @@ or turned into a circle at any width.
 | **Turn** | opens the turn box: angle in degrees (positive = CCW, negative = CW), optional speed, then **Add turn**. |
 | **Forward / Back** | open the move box: distance in mm, optional speed, then **Add forward** / **Add backward**. The robot drives straight along the heading held at that mission point; Back reverses without turning around. |
 | **Release** | opens the release box: **Add release step** inserts a motor-release action in the sequence, **Release now** sends it immediately. Both are allowed only after every movement has completely finished; the drivers turn off without latching E-STOP and the next move re-energizes them automatically. **Release now** first expands a small inline confirmation card below the buttons (UI-styled, Cancel / Escape closes) - no browser dialog. |
-| **Box** / **Zone** | drag **static** obstacles. Set them while the robot stands still: the tools **lock while a mission executes** (a message says so). Obstacles are clamped to the game area (the planner clips them too), like waypoints. While the robot runs, moving obstacles are dragged instead (see below). Changing the map while idle re-plans an on-screen plan at once. |
+| **Box** / **Zone** / **Polygon** | drag a rectangle (**Box**), drag out a circle (**Zone** - centre + radius), or click the points of a **Polygon** shape (the points are joined in order and the last one **closes the shape back to the first** - finish with **Enter**, a **double-click** or a click on the first point, **Esc** cancels). The box under the tools chooses the obstacle **type**: **Permanent** (fixed table fixture, anonymous) or **Game element** (movable; the required **name** A/B/... is painted on the map as a chip). Game elements also choose **Game element: Place now / Spawn step**. **Place now** is immediate: the drawn shape is the marker's new position (drawing an existing name moves that piece). **Spawn step** is programmable: the drawn shape becomes the destination of a spawn action and the map marker keeps its **initial** position until the robot reaches that step - a dashed preview shows where the piece will be created. Permanent obstacles never get that choice: they are only created at the setup and are never adjusted or scheduled. Shapes are clamped to the game area. **Once the sequence has steps, permanent obstacles are locked** (no create/edit/delete); game elements stay editable. All obstacle tools **lock while a mission executes** - use the sequence's **Erase element** / **Spawn element** steps for game pieces during a run. **Click any existing obstacle to edit it**: a popup shows the type/name and the **X / Y / W / H** of a box, the **centre X / Y and radius** of a zone, or **one X / Y row per vertex** of a polygon - Apply moves it and re-plans, the bin removes it (game elements only once the sequence started). The same editor opens with **Pan** (click without dragging) and with each of the three tools. Changing the map while idle re-plans an on-screen plan at once. |
 | **Pan** | drag to pan, wheel zooms. `Fit view` (Config) resets. |
-| **Erase** | remove paths, obstacles, the goal (sequence steps: x in the list). |
+| **Erase** | remove paths, obstacles (permanent fixtures only while no sequence has steps), the goal (sequence steps: x in the list). The **Game element click** box chooses **Delete now** (the marker disappears immediately) or **Add erase step** (programmable: the marker stays on the map and the route keeps avoiding it until the robot reaches that step). Permanent obstacles are always **Delete now** - they are never scheduled. |
 | **Opponent robots** | the dashed squares with ids (`R1`...) - this console **reports them to the service like a camera** (`/ws/vision`, keep-alive every 1.5 s). **Count (0-4) and positions are set in Config > Opponent robots**; default: 1 robot at (2700, 1790) mm. **Drag them anytime, also while your robot drives**: while held, the console streams the position at the **15 Hz camera rate** (even if the pointer is still) and stops on release. The service reacts only when the other robot is **near ours** (~0.7 m) - then it re-routes, or **stops and waits** (`EXEC waiting`) until the way is clear, then continues by itself. If it is dragged **onto the robot**, the run stops immediately (safety stop) and keeps a recoverable wait: move it away and the remaining mission resumes automatically - it is never left permanently stopped. A robot parked on the path **far ahead changes nothing**; it is re-checked as our robot approaches. When a **real camera** streams on the channel, the console yields (robots dimmed "- paused") and that input is used. |
 | *(camera)* | other obstacles reported over `/ws/vision` (a real detector) are drawn as **dashed red-orange outlines** - they cannot be edited; they respect their TTL. |
+
+**Game elements in the sequence** - the Sequence card has a game-element
+picker plus **Erase element** and **Spawn element**. Both are **programmable**:
+the map marker does not change when the step is added. **Erase element** lets
+the route pass through the piece's old spot after that step; **Spawn element**
+starts a placement: a dashed outline of the piece follows the pointer, a click
+on the map drops the destination and appends the spawn step (Esc cancels). The
+sequence row also carries the destination **X / Y**, so it can be fine-tuned
+later. The same programmable placement is available from the Box / Zone /
+Polygon tool with **Game element: Spawn step**; **Place now** stays the
+immediate edit. The planner routes every leg on the obstacle map that is there
+at that point of the mission, e.g. drive to `A`, erase `A`, drive through,
+then spawn `A` somewhere else. During the run the service updates its live
+obstacle map at each action and the console's marker follows (the dashed
+preview disappears once the real marker matches it), so a later camera
+re-plan sees the right pieces. A spawn step stores its destination geometry,
+so the piece does not need to be on the map to be placed back. **Permanent
+table fixtures are never programmable**: they are created once at the setup,
+can only be deleted immediately (and are locked once the sequence starts), so
+they can never be erased or re-spawned by a strategy.
 
 The hint line under the tools explains the active tool; the long description
 sits under **Details**, collapsed by default (same for the other cards).
@@ -119,7 +140,8 @@ edited on the map (placing or clicking it opens the goal popup - see the
 | **Plan** | plans the mission (`POST /api/plan`). While executing, it is a *re-check*: the remaining route is re-planned only when actually affected (log tells the outcome). |
 | **Set Pose** | commits the Pose draft (same as popup *Validate*) |
 | **Execute** | runs the last plan; re-pressable to replay it (full-width green button). With `STREAMING_EXEC=1` (and firmware >= 3.4) the same button drives the whole path with the streaming follower - one acceleration, one deceleration, no stop at the junctions; the progress line shows **streaming mode active** with the millimetres left. The follower **aligns in place before driving** when the path lies behind the robot (it never drives forward towards a target behind it) and aborts at the field-edge geofence or when the live pose is > 300 mm off the plan - re-plan from the real pose in that case. The plan's **final heading** (waypoint angle / goal theta) is performed with an in-place turn after the path ends. A plan containing an explicit rotation, pause, **motor release** or **mid-route arrival turn** cannot be encoded as a polyline: Execute uses the segment backend for it and logs *"streaming skipped: this plan performs an in-place rotation, pause, motor release or arrival turn..."*. |
-| **Pause / Resume** | stop in place and continue with the next absolute node |
+| **Pause / Resume** | stop in place, then **Resume finishes the node that was interrupted**: the remaining arc sweep / turn / distance is re-sent from the live pose, so the plan goes on exactly where it stopped (the run used to skip that node and the next one started from a pose the plan never expected - every relative ARC then bent the path). **Pause also freezes both counters** (task timer and match clock); **Resume** continues them from the frozen value |
+| **Redo (paused)** | while the run is **paused**, **Redo** lights up (indigo): it **ends the paused run** and puts the robot **back at the start of the sequence** (the pose it had when Execute was pressed), so **Execute** replays the whole path from the beginning - exactly like Redo after a finished run. **Redo restarts the counters**: the task timer and the match clock go back to zero, and the next Execute starts them again. Resume, on the other hand, continues where the robot stopped |
 | **Stop** | abort the run (execution stops; the robot holds position) |
 | **E-STOP** | latched emergency stop - clear faults afterwards |
 | **Clear Faults** | `CLEAR_FAULTS` on the board |
@@ -153,17 +175,25 @@ Cards, each with small group captions, icon buttons and a collapsed
 **Details** fold where a long explanation exists:
 
 * **Robot** - *Body*: width/height (position = centre); *Obstacle
-  clearance*: the safety margin; *Robot photo*: file picker with a
-  **thumbnail preview** and **Clear**. The photo is drawn inside the robot
-  square, which uses exactly the configured width x height; the info box
-  shows the derived clearances (half-diagonal, full inflation).
+  clearance*: the safety margin, the **waypoint clearance (extra)**, the
+  **pose clearance (extra)** (both 0 = half the larger body side, so a
+  placed pose or a waypoint may stand with the robot edge on the border) and
+  the **turn clearance (extra)** - added to the body's diagonal, it is the
+  room a planned in-place turn needs, so the straight escape at the start
+  and the departure move after a close waypoint get longer by the same
+  amount (default 30 mm);
+  *Robot photo*: file picker with a **thumbnail preview** and **Clear**. The
+  photo is drawn inside the robot square, which uses exactly the configured
+  width x height; the info box shows the derived clearances (half-diagonal,
+  full inflation).
 * **Opponents** - the console's camera role: the info box (updated live)
   says when a **real camera stream** has taken over (console paused, robots
   dimmed); *Count & positions*: how many robots it reports (**0-4**,
   **default: 1 robot at (2700, 1790) mm**) and one chip row per robot with
-  its X / Y position (300x300 mm each) - the fields and dragging on the
-  canvas mirror each other, *Reset* restores the default; *Opponent photo*:
-  picker + thumbnail + clear, drawn inside the R1... squares.
+  its X / Y position **and heading θ** (300x300 mm each; the id `R1` is
+  painted on the front face and turns with it) - the fields and dragging on
+  the canvas mirror each other, *Reset* restores the default; *Opponent
+  photo*: picker + thumbnail + clear, drawn inside the R1... squares.
   *Photos are downscaled to 512 px and stored in this browser only.*
 * **Path options** - *Motion*: speed; *Geometry fitting*: node step
   (straights), corner radius, arc chord tolerance, fit tolerance (caption +
@@ -181,8 +211,18 @@ Cards, each with small group captions, icon buttons and a collapsed
   squares)**, obstacles, goal, ruler/angle and the pose marker. Each row shows
   the swatch and its hex value; changes are persisted in the browser
   (`localStorage`) and apply live. *Reset all colours* restores the defaults.
-* **Field** - *Size*: width/height + **Apply**; *View*: **Fit view**
-  (zoom the map so the whole field fits).
+* **Layer opacity** - the transparency of **our robot**, the **other robots**
+  (camera squares and reports) and the **obstacles**, one slider per layer
+  (0-100 %, readout next to it). **100 % is a solid shape painted in the
+  layer's colour** - lower the slider to let the field artwork and the planned
+  path show through (the default look of the console is a fully solid layer).
+  Double-click a slider to make that layer solid again, or press *Reset
+  transparency*. Stored next to the colours in the browser (`localStorage`,
+  key `charara.opacity`) and applied live - the obstacle-drawing previews stay
+  outlined while you drag, whatever the setting.
+* **Game** - a shortcut to the **Game** tab of the settings rail
+  (table size, background artwork, match clock, timed actions, starting
+  zones and their colours).
 
 ![UI tab in the dark theme: Light / Dark / System appearance switcher and the map colour palette with a hex readout per layer](assets/screenshots/console-theme-palette.png)
 
@@ -190,7 +230,93 @@ Cards, each with small group captions, icon buttons and a collapsed
 
 ![Opponent (camera role) and path options: speed, node step, corner radius](assets/screenshots/console-opponents-path-options.png)
 
-## 9. Calibration tab
+## 9. Game Configuration tab
+
+Everything that makes the console fit a **different game** lives in one
+place: the **Game** tab of the settings rail, between **UI** and
+**Calibrate**. It edits a small persisted document
+(`MAP_CONFIG_FILE`, default `<repo>/map/map.json`; `/data/map/map.json` in
+docker), so the table size, the artwork, the match clock, the timed actions
+and the starting zones survive restarts and redeploys.
+
+* **Field - size & artwork** - *Play area*: width/height + **Apply size**
+  (the zones are re-clamped inside the new table instead of being lost).
+  *Background artwork*: every image **and PDF** found in `ui/static/field`
+  is listed - pick one and the map redraws at once; **Automatic** keeps the
+  `table.png -> table.jpg -> field-default.svg` search order. The PDFs
+  Eurobot publishes can be selected as-is: the service rasterises **page 1**
+  to a ~3000 px PNG on first use (poppler `pdftoppm`, a few seconds) and
+  caches it under `MAP_CACHE_DIR` (`/data/map/cache` in docker), so the next
+  load is instant and the browser never downloads the vector file.
+  **Rescan** picks up a file you just copied into the folder; **Fit view**
+  zooms the whole field.
+  *Background opacity*: a 0-100 % slider under the picker fades the artwork
+  (remembered in this browser) so a busy printed table stops fighting with
+  the drawn mission and the planned path; double-click the slider (or drag it
+  back) for the full table.
+* **Game time - match clock & timed actions** - set the **game duration**
+  (default 100 s; 0 disables the clock) and the **red warning window**
+  (default the last 10 s). **Save clock** persists it; **Start clock** starts
+  it now; **Reset** rewinds it and re-arms the timed actions. Execute also
+  starts the clock automatically. The clock is server-side; **Pause freezes
+  it**, **Resume continues it** and **Redo rewinds it** together with the
+  task timer. At the limit, a **REAL** run stops immediately and refuses a
+  restart until Reset; **MOCK** keeps running and the header game pill shows
+  the red overtime warning/mark.
+  *Timed actions* fire once per clock run at an **elapsed** second (for
+  example 95 s): add a row, choose **Log** (writes the event log now) or
+  **REST call** (the reserved actuator bridge - configurable and dispatched
+  through a pluggable handler, but no network call yet), then **Save
+  actions**. The architecture and a handler example are in
+  [11-game-time.md](11-game-time.md).
+* **Starting zones** - press **Start zone**, then **drag a rectangle** on the
+  map. A popup opens (the same pattern as the waypoint editor) with:
+  * **team** (Yellow / Blue) and **type**: **Primary** (the main robot) or
+    **Secondary** (the small/secondary robot),
+  * the rectangle's **X / Y / W / H** in mm,
+  * for a **primary** zone only, the **robot spawn pose**: X, Y and theta -
+    the exact pose the robot starts the match from inside the rectangle
+    (**Centre of the zone** snaps it to the middle).
+
+  The list under the card shows every zone with its colour, size and spawn;
+  click a row (or the zone on the map) to edit it, the bin deletes it. The
+  **erase** tool removes a zone too. A primary zone's spawn **owns its team's
+  match start**: the header, the MOCK placement and the rehearsal scenario
+  follow it (`TEAM_START_*` is only the fallback when no zone exists).
+* **Zone colours** - one colour per team; every zone is painted in its team
+  colour, and a primary zone draws the robot spawn body + heading marker.
+  The colours are stored in the map document (not per browser).
+
+The zones are configuration, **not obstacles**: the planner ignores them. A
+zone may extend to the table border; a spawn is clamped inside its own
+rectangle by the service, so a hand-edited file can never place the robot
+outside its start box.
+
+**Saving a zone places the robots in it.** The start zone *is* the match
+start, so when you save the zones the service puts **our robot** at the
+current team's primary spawn (the MOCK simulator is teleported, like a team
+switch); on the REAL robot the console never moves the board - the log tells
+you the pose to place by hand, then press **Set Pose**. **R1** (the console's
+reported opponent) is moved into the opponent's primary zone on the map at
+the same time. A running mission is never disturbed: the new start applies
+from the next run. The **Check readiness** test follows the zones too (a
+`start zones` row says whether both teams are configured, and `start pose`
+measures against the zone spawn).
+
+**Reset robot to start** (button under the zone list) puts the robot back on
+that start at any time: `POST /api/pose/start` teleports the MOCK simulator,
+and on the REAL robot the log gives the pose to adopt with **Set Pose**. The
+line under the button always shows the current start pose of our side.
+
+**Switching side mirrors the mission.** A team change does more than move the
+robots: paths, waypoints (position and arrival heading), rotations, the goal
+and the drawn obstacles are reflected about the table's centre line
+(`x -> W - x`, heading -> `180 - theta`, rotations negated) - exactly the
+transformation a strategy authored for the other side gets when it is loaded.
+**R1** is placed in the opponent start **facing our robot**, so its id (painted
+on its front face) points at us.
+
+## 10. Calibration tab
 
 Every value here is a **settings register of the board** (see
 [05 section 5](05-api-reference.md)): wheel geometry, tracks, speed limits, ramps,
@@ -207,7 +333,7 @@ gains and direction masks. Each group's **Apply** writes its values immediately
 | **Drive test** | commands a measured straight run (`/api/move/drive`) at a chosen speed/distance, watches the telemetry, then shows *board odometry: moved X mm (commanded Y mm)*. Enter the tape measurement and press **Fix wheel size** (stepper wheel diameter) or **Fix odom wheel** (odometry circumference) - the new value is computed as old x measured / commanded (or / reported for odometry). |
 | **Turn test** | same for in-place turns (max 180 deg per command): *board odometry: turned X deg (commanded Y deg)* with **Fix drive track** (robot track) and **Fix odom track** (odometry wheel track). |
 | **IMU / gyro** | the MPU6050 health (state, yaw axis + mount tilt, bias, live integrated angle, gyro stream frames, whether the board sees a fresh stream) and its calibration tools, all applied live (persist through `docker/.env`): **Reset counter** -> rotate the robot N complete turns by hand -> **Compute & apply scale** (new `GYRO_SCALE` = current x 360 x turns / integrated, applied to the fusion and the board stream at once), **Recalibrate bias** (robot still) and **Measure noise** (suggests `GYRO_SIGMA_DEG_S`). The bias also keeps refining by itself at rest (the live value shows it converging); **Recalibrate bias** re-averages it at once. **Stop IMU (bench test)** / **Start IMU** rehearse an IMU loss without unplugging anything: Stop is safe while the robot moves (the board falls back to wheel heading within ~200 ms, never a fault); Start re-probes the sensor, re-averages the bias and needs the robot standing still. |
-| **Acceptance & readiness** | one-click bench and match-prep tests, each with its own steps and a PASS/FAIL line showing the numbers and the limits: **Check readiness** (REAL link + firmware, latched faults, the recent board log, saved settings, IMU bias settled + stream active, robot at its match start; warnings do not fail); **Square test** (four GOTOs, pass = return within 20 mm / 2 deg); **Arc test** (left + right quarter arcs, 20 mm / 2 deg each); **Chain audit** (flat-arc -> quarter-arc -> flat-arc through the executor; pass = zero junction stops, i.e. QUEUE_ARC blending engaged; the closing error is reported); **Rest-drift audit** (N s standing still: board/fused pose drift, encoder tick noise, gyro noise; pass <= 2 mm / 0.5 deg); **Turn repeatability** (N turns per direction: fused mean/sigma/max, board copy and the wheel-vs-gyro scrub per direction; pass |mean| <= 3 deg, sigma <= 1.5 deg); **Loop-drift audit** (closed square loops without corrections: board drift = control+slip, fused drift = estimation, tick scale vs the geometric length; pass <= 60 mm / 4 deg on the last loop); **Speed & ramp audit** (straight run sampled live: real peak/cruise speed, time to 95 %, distance; pass peak within +/-15 %, distance within 60 mm); **Encoder check** (+d, -d, +90 deg turn: tick scale, backward direction, turn polarity and magnitude match); **Fault drills** (E-stop rehearsal: latch + clear, no motion; Deadman drill: a slow creep while telemetry AND the gyro stream go silent for the window - any received frame would feed the watchdog - so the board must stop ITSELF at the 1.5 s watchdog and latch DEADMAN; MOVES the robot, clear floor required; the drill clears the fault before returning). Motion tests refuse while a mission executes or with latched faults, arm the deadman while they run, and all tests also run in MOCK (results say MOCK). |
+| **Acceptance & readiness** | one-click bench and match-prep tests, each with its own steps and a PASS/FAIL line showing the numbers and the limits: **Check readiness** (REAL link + firmware, latched faults, the recent board log, saved settings, IMU bias settled + stream active, the **start zones** of both teams and the robot standing in its own start zone; warnings do not fail); **Square test** (four GOTOs, pass = return within 20 mm / 2 deg); **Arc test** (left + right quarter arcs, 20 mm / 2 deg each); **Chain audit** (flat-arc -> quarter-arc -> flat-arc through the executor; pass = zero junction stops, i.e. QUEUE_ARC blending engaged; the closing error is reported); **Rest-drift audit** (N s standing still: board/fused pose drift, encoder tick noise, gyro noise; pass <= 2 mm / 0.5 deg); **Turn repeatability** (N turns per direction: fused mean/sigma/max, board copy and the wheel-vs-gyro scrub per direction; pass |mean| <= 3 deg, sigma <= 1.5 deg); **Loop-drift audit** (closed square loops without corrections: board drift = control+slip, fused drift = estimation, tick scale vs the geometric length; pass <= 60 mm / 4 deg on the last loop); **Speed & ramp audit** (straight run sampled live: real peak/cruise speed, time to 95 %, distance; pass peak within +/-15 %, distance within 60 mm); **Encoder check** (+d, -d, +90 deg turn: tick scale, backward direction, turn polarity and magnitude match); **Fault drills** (E-stop rehearsal: latch + clear, no motion; Deadman drill: a slow creep while telemetry AND the gyro stream go silent for the window - any received frame would feed the watchdog - so the board must stop ITSELF at the 1.5 s watchdog and latch DEADMAN; MOVES the robot, clear floor required; the drill clears the fault before returning). Motion tests refuse while a mission executes or with latched faults, arm the deadman while they run, and all tests also run in MOCK (results say MOCK). |
 | **Board errors** | the decoded board event log (`GET /api/errors`): newest first, with code, name, severity and the context byte - faults, bad frames, rejected parameters, flash errors, config fallbacks, reset causes. Refreshes with the diagnostics poll. |
 
 Workflow: run a drive test, measure, press the fix button (it writes the new
@@ -220,7 +346,7 @@ turn the robot N complete turns by hand, enter N and **Compute & apply scale**;
 the note under the buttons shows the exact `GYRO_SCALE=...` line to add to
 `docker/.env` (values apply live but restart from the environment).
 
-## 10. Reading the canvas
+## 11. Reading the canvas
 
 | Layer | Look |
 |---|---|
@@ -228,10 +354,9 @@ the note under the buttons shows the exact `GYRO_SCALE=...` line to add to
 | ghost robot | semi-transparent square (same size as the robot box) = where the commands leave the robot (rotations acted out) |
 | plan preview | **Planned path** color (default pink) + node dots; **Reference** color, dashed = fitted reference; arcs drawn as a dashed overlay labeled `arc R##`; **Turns & pauses** color for actions |
 | robot | solid square (config Width x Height, rotated with the heading) with the **front chevron inside it**, **Our robot** color; a photo fills the square when one is set; red when faulted |
-| obstacles | **Obstacles** color outlines (console boxes/zones), **Other robots** color (default red-orange) dashed squares with ids `R1`... (the opponent robots this console reports - dimmed while a real camera streams), other dashed outlines (a real camera) |
-| mock watermark | yellow "MOCK - SIMULATED ROBOT" |
+| obstacles | **Obstacles** color outlines (console boxes/zones/polygon shapes - solid at 100 % opacity, game elements dashed with their name chip, a bright ring while one is open in the editor), **Other robots** color (default red-orange) dashed squares with ids `R1`... (the opponent robots this console reports - dimmed while a real camera streams), other dashed outlines (a real camera) |
 
-## 11. Warnings & logs
+## 12. Warnings & logs
 
 ![Live re-planning: the opponent R1 is reported by the camera in the middle of the route, the log shows "R1 moved ... our route is re-checked" and the next "plan ready", and the dashed plan is re-routed around it](assets/screenshots/console-reroute.png)
 
@@ -257,7 +382,7 @@ in [03 section 11](03-planner-algorithms.md). The most common ones:
   clearance…"* mean the corridor was too tight for the full margin: those
   are the only cases where the robot drives closer than configured.
 
-## 12. Typical workflows
+## 13. Typical workflows
 
 ![Tests tab: pre-match readiness check, square test and arc test with PASS/FAIL limits](assets/screenshots/console-tests.png)
 
@@ -272,11 +397,23 @@ in [03 section 11](03-planner-algorithms.md). The most common ones:
 3. **Plan** -> inspect the preview and warnings -> **Execute >**.
 4. Watch progress (EXEC pill, ghost, log). **Pause/Resume/Stop** any time.
 
+**Set up a different game field (settings rail -> Map)**
+1. Enter the play area **width / height** and press **Apply size**.
+2. Pick the **background artwork** - an image or the PDF Eurobot publishes -
+   (or drop a new file in `ui/static/field` and press **Rescan**).
+3. Press **Start zone**, drag the yellow (and blue) starting rectangle, then
+   set its **team**, **type** and - for a primary zone - the robot **spawn
+   pose** (X, Y, theta) in the popup. Repeat for the secondary rectangle.
+4. The zones and the spawns are saved at once; press **Fit view** to see the
+   whole table.
+
 **React to something on the table**
-* Console, static: draw a **Box** where the obstacle is (while the robot
-  stands still). If the robot is running and its *remaining* route is affected
-  it stops, re-routes (shortest detour) and continues - otherwise nothing
-  changes.
+* Console, static: draw the obstacle where it is - a **Box**, a **Zone**
+  (circle) or a **Polygon** shape clicked point by point (a triangular table
+  leg, an angled bumper…), while the robot stands still. Click it again to
+  correct its coordinates. If the robot is running and its *remaining* route
+  is affected it stops, re-routes (shortest detour) and continues - otherwise
+  nothing changes.
 * Opponent robots (dynamic): **drag the opponent robots** (`R1`... in Config) -
   also while the robot drives. The
   service reacts only when one gets **close to your robot** (~0.7 m): it
@@ -304,7 +441,7 @@ in [03 section 11](03-planner-algorithms.md). The most common ones:
 * A stop immediately followed by *"dynamic obstacle ..."* is *intentional* -
   the route was re-planned; execution continues automatically.
 
-## 13. Troubleshooting
+## 14. Troubleshooting
 
 | Symptom | Check |
 |---|---|

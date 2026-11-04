@@ -70,13 +70,66 @@ LAUNCH_WEAVE_MAX_DEV_MM = 90.0     # deviation from the drawn opening it replace
 LAUNCH_WEAVE_LEGAL_SKIP_MM = 60.0  # the robot may stand inside the border strip
 #                                    (match start y=1800): the first millimetres
 #                                    leaving it are exempt, like a lead GOTO is
+# The LAUNCH is a CURVE, never an in-place pivot ("the robot could perform a
+# short forward then start curves"): when the opening would rotate the robot
+# on the spot, a straight along the CURRENT heading plus ONE arc that joins
+# the line into the first route node tangentially replaces it. The (lead,
+# radius) scan keeps the opening as short as the table allows and refuses a
+# launch that would leave a heading kink at the node (the runtime would stop
+# there to correct it - one stop traded for another).
+LAUNCH_FILLET_MAX_KINK_DEG = 4.0    # tangent continuity at the first node
+LAUNCH_FILLET_MIN_TURN_DEG = 20.0   # a smaller opening turn drives as it is
+LAUNCH_FILLET_MIN_LEG_MM = 40.0     # the straight after the arc must be real
+LAUNCH_FILLET_MIN_NODE_MM = 120.0   # below this the node is a micro-hop
+LAUNCH_FILLET_MAX_LEAD_MM = 160.0   # "short forward" upper bound
+LAUNCH_FILLET_LEAD_STEP_MM = 20.0
+LAUNCH_FILLET_MAX_RADIUS_MM = 900.0
+LAUNCH_FILLET_RADIUS_STEP_MM = 5.0
+LAUNCH_FILLET_MAX_EXTRA_MM = 600.0  # a smooth launch may cost this much path
+#                                     more than pivoting in place; past it the
+#                                     pivot is the honest answer (a robot
+#                                     facing away next to an obstacle would
+#                                     otherwise drive a 3 m loop)
+LAUNCH_FILLET_COMFORT_RATIO = 0.5   # the launch arc is at least this share of
+#                                     the drawn-corner radius: a 60 mm arc is
+#                                     a spin, not a launch curve
+LAUNCH_FILLET_MAX_TARGETS = 5       # route nodes the launch may fold together
+LAUNCH_FILLET_MERGE_TOL_MM = 12.0   # ... while they lie this close to the line
 LEGAL_PAD_MM = 12.0           # keep the body a little clear of the border line
 LEGAL_EPS_MM = 1e-3           # boundary points are legal, not a hair outside
 WAYPOINT_STANDOFF_STEP_MM = 10.0  # search step of the straight final-leg stand-off
 WAYPOINT_STANDOFF_MIN_MM = 25.0   # shortest final leg that still forms a real node
 WAYPOINT_STANDOFF_MAX_MM = 1200.0  # farthest safe point worth trying [mm]
+WAYPOINT_STANDOFF_TURN_MARGIN_MM = 100.0
+#: The stand-off is where the robot performs the final in-place turn to the
+#: approach heading. The bare rotation clearance leaves the body corner a few
+#: millimetres from the border (real last waypoint 2026-10-22: 7 mm), so a
+#: comfortably clear stand-off is preferred over the first minimally safe one;
+#: the first turn-safe point remains the fallback when no such room exists.
+WAYPOINT_REVERSE_APPROACH_DEG = 90.0
+#: A close waypoint whose arrival angle points this far AWAY from the natural
+#: approach is reached in REVERSE: the robot turns to the arrival angle at a
+#: turn-safe stand-off and backs straight onto the point. Pivoting that much
+#: ON a point that stands inside the routing margin (strategy3's second
+#: waypoint: 95 deg, 285 mm from the element) sweeps the body next to the
+#: obstacle the operator wanted to approach - backing in keeps the body
+#: already at the commanded angle (2026-11-04).
+WAYPOINT_REVERSE_MIN_MM = 300.0
+#: Shortest straight reverse final leg worth planning: a 60 mm back-up is not
+#: a manoeuvre. The search still falls back to a shorter comfortable stand-off
+#: when the field/obstacles leave no room for this much.
 DEPARTURE_TURN_TOL_DEG = 0.5      # a continuation this close to the arrival heading
 #                                   needs no departure move at all
+STROKE_JOIN_MAX_KINK_DEG = 20.0   # ... and how far off the DRAWING the approach
+#                                   may arrive: a cut met at a large angle makes
+#                                   the robot stop and pivot onto the drawing
+#                                   right after the escape
+STROKE_JOIN_MAX_TURN_DEG = 60.0   # how far off the departure heading the join
+#                                   point of a sliced stroke may lie: the
+#                                   projection onto the stroke can land BEHIND
+#                                   the escaped pose (the drawing starts at the
+#                                   robot and runs backwards first), and the
+#                                   robot would drive back and hook onto it
 WEAVE_MAX_DEG = 155.0         # arrival turns above this are not arc-woven
 ARRIVAL_MAX_BOW_MM = 10.0     # the arrival weave may bow the approach leg (and
 #                               re-aim the near-straight ARC it starts on) no
@@ -163,13 +216,23 @@ from .clearance import (
     clearances,
     closest_body_clear_point,
     closest_clear_point,
+    first_body_clip,
     obstacle_clearance,
     point_clearance,
-    rotation_clearance,
     straight_approach_clear,
+    turn_clearance as turn_clearance_mm,
     waypoint_clearance,
 )
 from .options import PlanOptions
+from ..world.obstacles import (
+    TYPE_GAME_ELEMENT,
+    apply_action,
+    check_element_name,
+    find_game_element,
+    normalize_obstacles,
+    validate_actions,
+    validate_spawn_obstacle,
+)
 
 
 def _clamp_obstacles(
@@ -208,6 +271,17 @@ def _clamp_obstacles(
             x = min(max(float(item.get("x", 0.0) or 0.0), r), max(r, width - r))
             y = min(max(float(item.get("y", 0.0) or 0.0), r), max(r, height - r))
             item["x"], item["y"], item["r"] = x, y, r
+        elif kind == "polygon":
+            points = []
+            for raw in item.get("points") or []:
+                try:
+                    px, py = float(raw[0]), float(raw[1])
+                except (TypeError, ValueError, IndexError):
+                    continue
+                points.append([min(max(px, 0.0), width), min(max(py, 0.0), height)])
+            if len(points) < 3:
+                continue  # not an area: a mis-click, not an obstacle
+            item["points"] = points
         clamped.append(item)
     return clamped
 
@@ -220,8 +294,23 @@ def plan(
     options: PlanOptions,
     field_width_mm: float,
     field_height_mm: float,
+    *,
+    _start_departure: bool = False,
 ) -> Dict:
-    """Run the whole pipeline and return a JSON-friendly program."""
+    """Run the whole pipeline and return a JSON-friendly program.
+
+    ``_start_departure`` is internal: the first pass tries to LAUNCH the
+    mission as a tangent arc from wherever the robot stands (no in-place
+    turn). Only when that is impossible does the planner re-run with the
+    straight escape move that gets the body out of the border strip before
+    the first turn.
+    """
+    start_departure_pass = bool(_start_departure)
+    # identity first (type / name / shape kind, unique game-element names),
+    # then the table clamp - a strategy's erase/spawn actions reference the
+    # names, so a legacy permanent obstacle must not keep one by accident
+    obstacles = normalize_obstacles(obstacles)
+    validate_actions(elements, obstacles)
     obstacles = _clamp_obstacles(obstacles, field_width_mm, field_height_mm)
     warnings: List[str] = []
     primitives: List[Dict] = []
@@ -236,22 +325,6 @@ def plan(
     relaxed_grid: Optional[OccupancyGrid] = None
     body_grid: Optional[OccupancyGrid] = None
     inflation = 0.0
-    if options.avoid_obstacles:
-        grid = build_grid(field_width_mm, field_height_mm, obstacles, options)
-        border, inflation = clearances(options)
-        # tier 2 (routing fallback + nothing else): border + half the margin
-        soft = border + 0.5 * max(0.0, inflation - border)
-        if soft < inflation - 0.01:
-            relaxed_grid = build_grid(field_width_mm, field_height_mm, obstacles, options, soft)
-        # tier 3 (PHYSICAL clearance: half-diagonal + a small buffer): the drawn
-        # geometry is only re-routed where the robot body would hit something -
-        # legs that merely use part of the margin are kept as drawn
-        body_infl = body_inflation(options)
-        body_grid = (
-            build_grid(field_width_mm, field_height_mm, obstacles, options, body_infl)
-            if body_infl < inflation - 0.01
-            else grid
-        )
 
     start = (float(start_pose[0]), float(start_pose[1]))
     # the pose heading is optional: with (x, y) the planner does not know how
@@ -321,7 +394,68 @@ def plan(
     waypoint_clear = waypoint_clearance(options)
     waypoint_obstacles = list(obstacles) if options.avoid_obstacles else []
     body_width, body_height = body_geometry(options)
-    turn_clearance = rotation_clearance(options)
+    # a planned turn needs the body's turning circle PLUS the configured margin
+    turn_clearance = turn_clearance_mm(options)
+
+    def rebuild_grids() -> None:
+        """(Re)build the routing grids from the CURRENT obstacle list.
+
+        A strategy can erase / spawn game elements mid-mission; every such
+        action rebuilds the grids so the legs AFTER it are routed on the
+        obstacle map that is really there at that time (the legs before it
+        already used the previous grid).
+        """
+        nonlocal grid, relaxed_grid, body_grid, inflation, waypoint_obstacles
+        grid = None
+        relaxed_grid = None
+        body_grid = None
+        inflation = 0.0
+        if not options.avoid_obstacles:
+            waypoint_obstacles = []
+            return
+        grid = build_grid(field_width_mm, field_height_mm, obstacles, options)
+        border, inflation = clearances(options)
+        # tier 2 (routing fallback + nothing else): border + half the margin
+        soft = border + 0.5 * max(0.0, inflation - border)
+        if soft < inflation - 0.01:
+            relaxed_grid = build_grid(
+                field_width_mm, field_height_mm, obstacles, options, soft
+            )
+        # tier 3 (PHYSICAL clearance: half-diagonal + a small buffer): the drawn
+        # geometry is only re-routed where the robot body would hit something -
+        # legs that merely use part of the margin are kept as drawn
+        body_infl = body_inflation(options)
+        body_grid = (
+            build_grid(field_width_mm, field_height_mm, obstacles, options, body_infl)
+            if body_infl < inflation - 0.01
+            else grid
+        )
+        waypoint_obstacles = list(obstacles)
+
+    rebuild_grids()
+
+    def arc_body_clear(points) -> bool:
+        """Exact rotated-body clearance of a generated junction connector.
+
+        The routing grid keeps the configured obstacle MARGIN. A junction
+        connector stays within ``ARC_CONNECT_MAX_DEV_MM`` of the geometry it
+        replaces, and a route re-routed at body clearance (tier 3) may already
+        use part of that margin - rejecting the connector there left an
+        in-place TURN between two arcs ("the robot danced"). The exact body is
+        checked instead, so the connector can still never touch an obstacle or
+        leave the field.
+        """
+        return (
+            first_body_clip(
+                points,
+                obstacles if options.avoid_obstacles else [],
+                body_width,
+                body_height,
+                field_width_mm,
+                field_height_mm,
+            )
+            is None
+        )
 
     def waypoint_clearance_at(point: Point) -> float:
         """Actual free distance of a waypoint from obstacles and borders."""
@@ -394,6 +528,9 @@ def plan(
         the GOTO there facing the leg) and fully route-reachable; the leg is
         sampled and checked against the REAL rotated body, so neither the
         final approach nor the in-place rotation can touch the obstacle.
+        A stand-off with ``WAYPOINT_STANDOFF_TURN_MARGIN_MM`` extra room is
+        preferred over the first minimally turn-safe one; the latter remains
+        the fallback when no such point exists.
         """
         rad = math.radians(heading_deg)
         ux, uy = math.cos(rad), math.sin(rad)
@@ -401,6 +538,9 @@ def plan(
             max(WAYPOINT_STANDOFF_MAX_MM, 2.0 * inflation + pose_radius + 400.0),
             math.hypot(field_width_mm, field_height_mm),
         )
+        comfortable = turn_clearance + WAYPOINT_STANDOFF_TURN_MARGIN_MM
+        fallback_standoff: Optional[Point] = None
+        comfortable_standoff: Optional[Point] = None
         distance = WAYPOINT_STANDOFF_MIN_MM
         while distance <= max_d:
             standoff = (point[0] - ux * distance, point[1] - uy * distance)
@@ -423,33 +563,138 @@ def plan(
                         and border_distance >= grid.border - 1e-6
                     )
                 if route_ok and waypoint_can_turn_at(standoff):
-                    leg_ok = straight_approach_clear(
+                    clear = waypoint_clearance_at(standoff)
+                    if clear < comfortable and fallback_standoff is not None:
+                        # already have the minimal turn-safe stand-off: keep
+                        # looking for one with real room around the rotation
+                        distance += WAYPOINT_STANDOFF_STEP_MM
+                        continue
+                    if straight_approach_clear(
                         standoff, point, heading_deg, waypoint_obstacles,
                         body_width, body_height, field_width_mm, field_height_mm,
-                    )
-                    if leg_ok:
-                        route: List[Point] = [anchor, standoff]
-                        if grid is not None:
-                            route = _route(
-                                grid, route, warnings, relaxed_grid, body_grid,
-                            )
-                        elif math.dist(anchor, standoff) > 1.0:
-                            # no routing grid: the connector is the straight
-                            # line from the robot, so check that body pose too
-                            connector_heading = math.degrees(math.atan2(
-                                standoff[1] - anchor[1],
-                                standoff[0] - anchor[0],
-                            ))
-                            if not straight_approach_clear(
-                                anchor, standoff, connector_heading,
-                                waypoint_obstacles, body_width, body_height,
-                                field_width_mm, field_height_mm,
-                            ):
-                                distance += WAYPOINT_STANDOFF_STEP_MM
-                                continue
-                        if math.dist(route[-1], standoff) <= 1.0:
-                            return standoff, route
+                    ):
+                        if clear >= comfortable:
+                            comfortable_standoff = standoff
+                            break
+                        fallback_standoff = standoff
             distance += WAYPOINT_STANDOFF_STEP_MM
+
+        # route only the chosen stand-off: the fallback is not needed when a
+        # comfortable one exists, and routing both used to duplicate the
+        # router's warnings
+        for standoff in (comfortable_standoff, fallback_standoff):
+            if standoff is None:
+                continue
+            route: List[Point] = [anchor, standoff]
+            if grid is not None:
+                route = _route(
+                    grid, route, warnings, relaxed_grid, body_grid,
+                )
+            elif math.dist(anchor, standoff) > 1.0:
+                # no routing grid: the connector is the straight line from
+                # the robot, so check that body pose too
+                connector_heading = math.degrees(math.atan2(
+                    standoff[1] - anchor[1],
+                    standoff[0] - anchor[0],
+                ))
+                if not straight_approach_clear(
+                    anchor, standoff, connector_heading,
+                    waypoint_obstacles, body_width, body_height,
+                    field_width_mm, field_height_mm,
+                ):
+                    continue
+            if math.dist(route[-1], standoff) <= 1.0:
+                return standoff, route
+        return None
+
+    def find_reverse_approach(
+        point: Point, theta_deg: float
+    ) -> Optional[Tuple[Point, List[Point], float]]:
+        """Turn-safe stand-off to REVERSE onto ``point`` facing ``theta_deg``.
+
+        The stand-off lies in the direction the robot will FACE (``theta``),
+        so the last leg is driven BACKWARDS with the body already at the
+        commanded arrival angle. No in-place turn happens on the waypoint:
+        that is the safe way to land on a point standing inside the routing
+        margin when the arrival angle points across the approach (strategy3's
+        second waypoint: a 95 deg pivot 285 mm from the element). The
+        stand-off itself must be turn-safe - the board finishes the pivot to
+        ``theta`` there - and the reverse leg is checked against the real
+        rotated body over its whole length.
+        """
+        rad = math.radians(theta_deg)
+        ux, uy = math.cos(rad), math.sin(rad)
+        max_d = min(
+            max(WAYPOINT_STANDOFF_MAX_MM, 2.0 * inflation + pose_radius + 400.0),
+            math.hypot(field_width_mm, field_height_mm),
+        )
+        comfortable = turn_clearance + WAYPOINT_STANDOFF_TURN_MARGIN_MM
+        preferred: Optional[Tuple[Point, float]] = None
+        comfortable_short: Optional[Tuple[Point, float]] = None
+        turn_safe: Optional[Tuple[Point, float]] = None
+        distance = WAYPOINT_STANDOFF_MIN_MM
+        while distance <= max_d:
+            standoff = (point[0] + ux * distance, point[1] + uy * distance)
+            inside = (
+                0.0 <= standoff[0] <= field_width_mm
+                and 0.0 <= standoff[1] <= field_height_mm
+            )
+            if inside:
+                route_ok = True
+                if grid is not None:
+                    border_distance = min(
+                        standoff[0], standoff[1],
+                        field_width_mm - standoff[0],
+                        field_height_mm - standoff[1],
+                    )
+                    route_ok = (
+                        grid.is_free_mm(standoff[0], standoff[1])
+                        and obstacle_clearance(standoff, waypoint_obstacles)
+                        >= inflation - 1e-6
+                        and border_distance >= grid.border - 1e-6
+                    )
+                if route_ok and waypoint_can_turn_at(standoff):
+                    if straight_approach_clear(
+                        standoff, point, theta_deg, waypoint_obstacles,
+                        body_width, body_height, field_width_mm, field_height_mm,
+                    ):
+                        entry = (standoff, distance)
+                        if (
+                            waypoint_clearance_at(standoff) >= comfortable
+                            and distance >= WAYPOINT_REVERSE_MIN_MM
+                        ):
+                            preferred = entry
+                            break
+                        if (
+                            waypoint_clearance_at(standoff) >= comfortable
+                            and comfortable_short is None
+                        ):
+                            comfortable_short = entry
+                        if turn_safe is None:
+                            turn_safe = entry
+            distance += WAYPOINT_STANDOFF_STEP_MM
+        for entry in (preferred, comfortable_short, turn_safe):
+            if entry is None:
+                continue
+            standoff, leg_mm = entry
+            route: List[Point] = [anchor, standoff]
+            if grid is not None:
+                route = _route(grid, route, warnings, relaxed_grid, body_grid)
+            elif math.dist(anchor, standoff) > 1.0:
+                # no routing grid: the connector is the straight line from
+                # the robot, so check that body pose too
+                connector_heading = math.degrees(math.atan2(
+                    standoff[1] - anchor[1],
+                    standoff[0] - anchor[0],
+                ))
+                if not straight_approach_clear(
+                    anchor, standoff, connector_heading,
+                    waypoint_obstacles, body_width, body_height,
+                    field_width_mm, field_height_mm,
+                ):
+                    continue
+            if math.dist(route[-1], standoff) <= 1.0:
+                return standoff, route, leg_mm
         return None
 
     def approach_waypoint_straight(
@@ -461,9 +706,20 @@ def plan(
         stop). When the point is turn-safe the robot may rotate there, so a
         stand-off along the natural approach is enough; otherwise the final
         leg must already run along ``theta`` and the rotation is finished at
-        the stand-off (``pre_rotated``).
+        the stand-off (``pre_rotated``). A ``theta`` pointing across the
+        approach (more than :data:`WAYPOINT_REVERSE_APPROACH_DEG` away from
+        it) is reached by REVERSING onto the point from a stand-off on the
+        side the robot faces, so the body never pivots on the close point.
         """
         can_turn = waypoint_can_turn_at(point)
+        natural_delta = (
+            abs(g.deg_norm180(float(theta) - natural_heading))
+            if theta is not None else 0.0
+        )
+        reverse_allowed = bool(
+            theta is not None
+            and (not can_turn or natural_delta > WAYPOINT_REVERSE_APPROACH_DEG)
+        )
         preferred: List[float] = []
         if theta is not None:
             preferred.append(float(theta))
@@ -487,6 +743,25 @@ def plan(
             seen.append(heading)
             found = find_close_approach(point, heading)
             if found is None:
+                if (
+                    reverse_allowed
+                    and theta is not None
+                    and abs(g.deg_norm180(heading - float(theta))) <= 1.0
+                ):
+                    # the forward leg along the arrival heading is impossible
+                    # (the space behind the point is blocked or off-field):
+                    # arrive facing it instead, driving the leg in REVERSE
+                    reverse = find_reverse_approach(point, float(theta))
+                    if reverse is not None:
+                        standoff, route, leg_mm = reverse
+                        return {
+                            "standoff": standoff,
+                            "route": route,
+                            "heading": float(theta),
+                            "pre_rotated": True,
+                            "reverse": True,
+                            "reverse_mm": leg_mm,
+                        }
                 continue
             standoff, route = found
             return {
@@ -587,15 +862,19 @@ def plan(
             body_width, body_height, field_width_mm, field_height_mm,
         )
 
-    def find_departure(point: Point, heading_deg: float) -> Optional[Dict]:
+    def find_departure(
+        point: Point, heading_deg: float, forward_first: bool = False
+    ) -> Optional[Dict]:
         """Straight move out of a close stop to a turn-safe point.
 
-        Both longitudinal directions are tried, reverse first (the reported
-        case: the waypoint hugs the border ahead of the robot, so backing up
-        is the natural escape). The move must leave the body clear along its
-        whole length, end fully route-reachable and require the true
-        half-diagonal clearance to rotate there. ``distance_mm`` is signed in
-        the robot frame: negative = reverse, positive = forward.
+        Both longitudinal directions are tried, normally reverse first (the
+        reported case: the waypoint hugs the border ahead of the robot, so
+        backing up is the natural escape); the START of a mission tries
+        forward first, because the robot faces the field there. The move must
+        leave the body clear along its whole length, end fully
+        route-reachable and give the centre the FULL turn clearance
+        (half-diagonal + ``turn_margin_mm``) to rotate there.
+        ``distance_mm`` is signed in the robot frame: negative = reverse.
         """
         rad = math.radians(heading_deg)
         ux, uy = math.cos(rad), math.sin(rad)
@@ -603,7 +882,7 @@ def plan(
             max(WAYPOINT_STANDOFF_MAX_MM, 2.0 * turn_clearance + 200.0),
             math.hypot(field_width_mm, field_height_mm),
         )
-        for sign in (-1.0, 1.0):
+        for sign in ((1.0, -1.0) if forward_first else (-1.0, 1.0)):
             distance = WAYPOINT_STANDOFF_MIN_MM
             while distance <= max_d:
                 candidate = (
@@ -735,15 +1014,25 @@ def plan(
         if pending.get("speed_mm_s"):
             departure_step["speed_mm_s"] = float(pending["speed_mm_s"])
         program.append(departure_step)
-        warnings.append(
-            "waypoint ({:.0f}, {:.0f}) mm is too close to rotate in place - "
-            "reached exactly, then the robot {} {:.0f} mm to ({:.0f}, {:.0f}) mm "
-            "before turning to continue".format(
-                point[0], point[1],
-                "backs up" if distance < 0.0 else "moves forward",
-                abs(distance), target[0], target[1],
+        if pending.get("origin") == "action":
+            warnings.append(
+                "the robot stands too close to the spawned game element to "
+                "rotate in place - it {} {:.0f} mm to ({:.0f}, {:.0f}) mm "
+                "before turning to continue (turn clearance {:.0f} mm)".format(
+                    "backs up" if distance < 0.0 else "moves forward",
+                    abs(distance), target[0], target[1], turn_clearance,
+                )
             )
-        )
+        else:
+            warnings.append(
+                "waypoint ({:.0f}, {:.0f}) mm is too close to rotate in place - "
+                "reached exactly, then the robot {} {:.0f} mm to ({:.0f}, {:.0f}) mm "
+                "before turning to continue (turn clearance {:.0f} mm)".format(
+                    point[0], point[1],
+                    "backs up" if distance < 0.0 else "moves forward",
+                    abs(distance), target[0], target[1], turn_clearance,
+                )
+            )
         anchor = target
         departure_join = target
         departure_origin = point
@@ -785,6 +1074,8 @@ def plan(
         if best_along <= 0.5:
             return pts
         remaining = best_along
+        cut = None
+        cut_leg = None
         for index in range(1, len(pts)):
             ax, ay = pts[index - 1]
             bx, by = pts[index]
@@ -794,10 +1085,59 @@ def plan(
             if remaining <= span:
                 t = remaining / span
                 cut = (ax + (bx - ax) * t, ay + (by - ay) * t)
-                out = [cut] + pts[index:]
-                return out if len(out) >= 2 else pts
+                cut_leg = index
+                break
             remaining -= span
-        return pts
+        if cut is None or cut_leg is None:
+            return pts
+        # the cut must lie AHEAD of the departure move. Projecting the join
+        # point onto the stroke's first leg can land BESIDE or BEHIND the
+        # escaped pose, and the plan then drives back and hooks onto the
+        # drawing it just left - the "non-sense first movements". Join further
+        # along the stroke where the robot can reach it without doubling back.
+        travel = (join[0] - origin[0], join[1] - origin[1])
+        if math.hypot(travel[0], travel[1]) > 1.0:
+            travel_heading = math.degrees(math.atan2(travel[1], travel[0]))
+
+            def reachable(point: Point) -> bool:
+                bearing = math.degrees(
+                    math.atan2(point[1] - join[1], point[0] - join[0])
+                )
+                return (
+                    abs(g.deg_norm180(bearing - travel_heading))
+                    <= STROKE_JOIN_MAX_TURN_DEG
+                )
+
+            def tangent(point: Point, following: Point) -> bool:
+                """Is the approach onto ``point`` aligned with the drawing?"""
+                approach = math.degrees(
+                    math.atan2(point[1] - join[1], point[0] - join[0])
+                )
+                drawn = math.degrees(
+                    math.atan2(following[1] - point[1], following[0] - point[0])
+                )
+                return (
+                    abs(g.deg_norm180(approach - drawn))
+                    <= STROKE_JOIN_MAX_KINK_DEG
+                )
+
+            first_reachable = None
+            for index in range(cut_leg, len(pts)):
+                if math.dist(pts[index], join) < 1.0:
+                    continue
+                if not reachable(pts[index]) or len(pts) - index < 2:
+                    continue
+                if first_reachable is None:
+                    first_reachable = index
+                # the approach should also be TANGENT to the drawing: a cut met
+                # at a large angle makes the robot stop and pivot onto it right
+                # after the escape
+                if tangent(pts[index], pts[index + 1]):
+                    return [pts[index]] + list(pts[index + 1:])
+            if first_reachable is not None:
+                return [pts[first_reachable]] + list(pts[first_reachable + 1:])
+        out = [cut] + list(pts[cut_leg:])
+        return out if len(out) >= 2 else pts
 
     def later_motion_needs_turn(index: int) -> bool:
         """Does anything after this element still move or rotate the robot?
@@ -816,12 +1156,111 @@ def plan(
 
     anchor = start
     first_stroke = True
+
+    def first_motion_heading() -> Optional[float]:
+        """Heading of the FIRST real motion of the mission (None = no turn).
+
+        A GOTO node turns the robot to the travel direction IN PLACE before
+        driving, so the mission start may only begin with one where the body
+        can really rotate (with the configured margin).
+        """
+        for element in elements:
+            kind = str(element.get("kind", "stroke"))
+            if kind in ("pause", "release"):
+                continue
+            if kind in ("drive", "rotate"):
+                return None  # straight along the heading, or the asked turn
+            target: Optional[Point] = None
+            if kind == "stroke":
+                pts = [
+                    (float(p[0]), float(p[1]))
+                    for p in element.get("points", [])
+                    if len(p) >= 2
+                ]
+                for point in pts:
+                    if math.dist(start, point) > ANCHOR_SNAP_MM:
+                        target = point
+                        break
+                if target is None and len(pts) >= 2:
+                    target = pts[-1]
+            elif kind in ("waypoint", "goal"):
+                target = (
+                    float(element.get("x", start[0])),
+                    float(element.get("y", start[1])),
+                )
+            if target is None:
+                return None
+            dx, dy = target[0] - start[0], target[1] - start[1]
+            if math.hypot(dx, dy) <= 1.0:
+                return None
+            return math.degrees(math.atan2(dy, dx))
+        return None
+
+    # ---- START departure: never turn in place where the body does not fit --
+    # The robot stands where the operator put it (usually inside a start box
+    # hugging the border) and the first node would rotate it towards the
+    # mission. When that turn does not have the full turn clearance, a short
+    # straight move ALONG THE CURRENT HEADING comes first (forward: the robot
+    # faces the field at the start), to a point where rotating is safe.
+    launch_start: Point = start
+    launch_skip = 0
+    launch_lead_mm = 0.0
+    start_escape: Optional[Dict] = None
+    if start_heading_deg is not None:
+        wanted_heading = first_motion_heading()
+        if (
+            wanted_heading is not None
+            and abs(g.deg_norm180(wanted_heading - start_heading_deg)) > 1.0
+            and point_clearance(
+                start, waypoint_obstacles, field_width_mm, field_height_mm
+            )
+            < turn_clearance - 1e-6
+        ):
+            escape = find_departure(start, start_heading_deg, forward_first=True)
+            if escape is not None:
+                start_escape = escape
+    # The straight move is only emitted when the launch cannot be woven into a
+    # tangent arc (a woven launch already leaves the strip driving FORWARD, so
+    # it needs no in-place turn). The weave is decided after the geometry is
+    # built, which is why this is a second pass.
+    if start_escape is not None and start_departure_pass:
+        target = start_escape["point"]
+        distance = float(start_escape["distance_mm"])
+        program.append({
+            "kind": "depart",
+            "distance_mm": distance,
+            "points": [
+                [round(start[0], 1), round(start[1], 1)],
+                [round(target[0], 1), round(target[1], 1)],
+            ],
+        })
+        warnings.append(
+            "the robot starts too close to the border/obstacle to turn in "
+            "place - a straight {} move of {:.0f} mm to ({:.0f}, {:.0f}) mm "
+            "comes first, where the body can rotate (turn clearance "
+            "{:.0f} mm)".format(
+                "forward" if distance > 0.0 else "backward",
+                abs(distance), target[0], target[1], turn_clearance,
+            )
+        )
+        anchor = target
+        launch_start = target
+        launch_skip = 1  # the departure drive stays in front
+        launch_lead_mm = abs(distance)
+        # A stroke that starts AT the robot is joined where the escape left
+        # it: driving forward and then back to the old pose is an out-and-back
+        # the operator never drew (the whole "turn and needless moves" launch).
+        departure_join = target
+        departure_origin = start
+
     for element_index, element in enumerate(elements):
         kind = element.get("kind", "stroke")
         # a pending departure is inserted before the first REAL motion after
-        # the close waypoint; a pause or motor release still happens ON the
-        # waypoint itself (neither moves the robot)
-        if pending_departure is not None and kind not in ("pause", "release"):
+        # the close waypoint; a pause, motor release or game-element action
+        # still happens ON the waypoint itself (none of them moves the robot)
+        if pending_departure is not None and kind not in (
+            "pause", "release", "erase", "spawn"
+        ):
             insert_pending_departure(element)
         if kind != "stroke":
             departure_join = None
@@ -909,6 +1348,62 @@ def plan(
             # action with no geometry: the executor sends the dedicated
             # RELEASE_MOTORS command once the previous move is fully idle
             program.append({"kind": "release"})
+        elif kind in ("erase", "spawn"):
+            # named game element: erase removes it from the routing grids,
+            # spawn adds the geometry carried by the action. The grid is
+            # rebuilt for the legs AFTER this point - the legs before it were
+            # already routed with the previous obstacle map.
+            name = check_element_name(element.get("name"))
+            action = {"kind": "game_element", "action": kind, "name": name}
+            if kind == "erase":
+                obstacles = apply_action(obstacles, "erase", name)
+            else:
+                raw = element.get("obstacle")
+                if not isinstance(raw, dict):
+                    raise ValueError(
+                        f"spawn '{name}' needs an 'obstacle' object with the "
+                        "geometry to place"
+                    )
+                validate_spawn_obstacle(raw)
+                placed = normalize_obstacles([
+                    {**raw, "type": TYPE_GAME_ELEMENT, "name": name}
+                ])[0]
+                placed = _clamp_obstacles([placed], field_width_mm, field_height_mm)[0]
+                obstacles = apply_action(obstacles, "spawn", name, placed)
+                action["obstacle"] = dict(placed)
+            program.append(action)
+            rebuild_grids()
+            # A SPAWN places the piece where the robot just released it -
+            # often right in front of the body. The next leg would rotate in
+            # place to face its route and sweep a body corner over the new
+            # geometry (live incident 2026-10-30: the robot hit the element
+            # it had just re-placed). Escape STRAIGHT along the current
+            # heading first (reverse when the piece is in front), exactly
+            # like a close-waypoint departure, to a point with full turn
+            # clearance. The move is pending, so a pause after the action
+            # still happens on the spot.
+            if kind == "spawn" and later_motion_needs_turn(element_index):
+                if pending_departure is not None:
+                    # a close waypoint already planned an escape, but the
+                    # piece may have appeared ON it: recompute the straight
+                    # move against the new geometry
+                    pending = pending_departure
+                    departure = find_departure(
+                        pending["point"], float(pending["heading"])
+                    )
+                    if departure is not None:
+                        pending["departure"] = departure
+                elif anchor_heading is not None and point_clearance(
+                    anchor, waypoint_obstacles, field_width_mm, field_height_mm
+                ) < turn_clearance - 1e-6:
+                    departure = find_departure(anchor, float(anchor_heading))
+                    if departure is not None:
+                        pending_departure = {
+                            "point": anchor,
+                            "heading": float(anchor_heading),
+                            "departure": departure,
+                            "origin": "action",
+                        }
         elif kind == "waypoint":
             # mandatory pass-through position: the path is routed through the
             # point and then SWEPT smoothly (the corner fillet is capped by
@@ -1063,6 +1558,8 @@ def plan(
                         route = approach["route"]
                         final_heading = approach["heading"]
                         pre_rotated = bool(approach["pre_rotated"])
+                        reverse = bool(approach.get("reverse"))
+                        reverse_mm = float(approach.get("reverse_mm") or 0.0)
                         if math.dist(anchor, standoff) > 0.5:
                             # the connector is routed on the full grid: keep
                             # it apart from the preceding run so the close-
@@ -1075,18 +1572,36 @@ def plan(
                         # there finishes facing the final leg, so the robot
                         # has performed the angle BEFORE the waypoint
                         program.append({"kind": "cut"})
-                        append_run([standoff, point], waypoint_speed)
-                        if program and program[-1].get("kind") == "run":
-                            # this leg was validated point-by-point against the
-                            # ROTATED body; it intentionally enters the routing
-                            # margin, so pass 2 must not clamp it back out
-                            program[-1]["close_waypoint"] = True
+                        if reverse:
+                            # backed onto the point: the stand-off GOTO ends
+                            # facing the arrival angle and the last leg keeps
+                            # that heading (a negative DRIVE), so nothing
+                            # pivots on the close waypoint
+                            program.append({
+                                "kind": "reverse",
+                                "from": standoff,
+                                "to": point,
+                                "heading": float(theta_deg if theta_deg is not None else final_heading),
+                                "distance_mm": -abs(reverse_mm),
+                                **(
+                                    {"speed_mm_s": float(waypoint_speed)}
+                                    if waypoint_speed else {}
+                                ),
+                            })
+                        else:
+                            append_run([standoff, point], waypoint_speed)
+                            if program and program[-1].get("kind") == "run":
+                                # this leg was validated point-by-point against the
+                                # ROTATED body; it intentionally enters the routing
+                                # margin, so pass 2 must not clamp it back out
+                                program[-1]["close_waypoint"] = True
                         program.append({"kind": "cut"})
                         waypoint_points.append(point)
                         if theta_deg is not None:
-                            arrival_targets.append(
-                                {"point": point, "theta": theta_deg, "woven": pre_rotated}
-                            )
+                            if not reverse:
+                                arrival_targets.append(
+                                    {"point": point, "theta": theta_deg, "woven": pre_rotated}
+                                )
                             anchor_heading = theta_deg
                         else:
                             anchor_heading = final_heading
@@ -1103,13 +1618,19 @@ def plan(
                             }
                         detail = ""
                         if theta_deg is not None:
-                            detail = (
-                                "; the arrival angle is performed at the stand-off "
-                                "before the straight final leg"
-                                if pre_rotated else
-                                "; the point is turn-safe, so the arrival angle is "
-                                "performed in place there"
-                            )
+                            if reverse:
+                                detail = (
+                                    "; the robot turns to the arrival angle at that "
+                                    "stand-off and reaches the point in REVERSE"
+                                )
+                            else:
+                                detail = (
+                                    "; the arrival angle is performed at the stand-off "
+                                    "before the straight final leg"
+                                    if pre_rotated else
+                                    "; the point is turn-safe, so the arrival angle is "
+                                    "performed in place there"
+                                )
                         warnings.append(
                             "waypoint ({:.0f}, {:.0f}) mm stands inside the routing "
                             "margin - approached straight from a safe stand-off at "
@@ -1297,10 +1818,14 @@ def plan(
                     end_run_heading = None
 
     if not any(entry["kind"] == "run" for entry in program):
-        if not any(entry["kind"] in ("rotate", "pause", "release") for entry in program):
+        if not any(
+            entry["kind"] in ("rotate", "pause", "release", "game_element")
+            for entry in program
+        ):
             raise ValueError("no usable stroke - draw a path first")
-        # an ACTIONS-ONLY mission (a rotation, a pause, a motor release) is
-        # legitimate: pass 2 emits those and the plan carries no path
+        # an ACTIONS-ONLY mission (a rotation, a pause, a motor release, a
+        # game-element action) is legitimate: pass 2 emits those and the plan
+        # carries no path
 
     # ------- pass 2: round corners, sample, emit GOTO/ARC nodes and actions -
     # the FINAL run: the last entry that carries geometry. NOT ``program[-1]``
@@ -1354,6 +1879,65 @@ def plan(
             est_s += abs(distance) / max(float(speed), 1.0)
             prev_kind = "drive"
             continue
+        if entry["kind"] == "reverse":
+            # close-waypoint arrival driven BACKWARDS: the preceding GOTO
+            # finished the pivot to the commanded angle at the stand-off, so
+            # the straight move onto the point keeps that heading (no pivot
+            # on the waypoint itself)
+            distance = float(entry.get("distance_mm", 0.0))
+            if abs(distance) < 0.5:
+                continue
+            declared_speed = entry.get("speed_mm_s")
+            speed = int(min(
+                PROTO_MAX_SPEED,
+                max(
+                    options.min_speed_mm_s,
+                    float(declared_speed) if declared_speed else turn_speed,
+                ),
+            ))
+            heading = float(entry.get("heading", 0.0))
+            previous = None
+            for candidate in reversed(segments):
+                if candidate["kind"] == "pause":
+                    continue
+                previous = candidate
+                break
+            if previous is not None and previous["kind"] == "goto":
+                # the stand-off stop faces the ARRIVAL angle, not the leg's
+                # travel direction (the leg runs backwards)
+                previous["th"] = round(g.deg_norm180(heading), 1)
+            elif previous is not None and previous["kind"] == "arc":
+                # the stand-off was reached on an arc tangent: pivot to the
+                # arrival angle there (the stand-off is turn-safe) so the
+                # reverse leg keeps that heading
+                exit_deg = g.deg_norm180(
+                    float(previous.get("th0_deg", 0.0))
+                    + float(previous.get("sweep_deg", 0.0))
+                )
+                delta = g.deg_norm180(heading - exit_deg)
+                if abs(delta) > 0.5:
+                    segments.append(
+                        {"kind": "turn", "angle_deg": round(delta, 1), "v": turn_speed}
+                    )
+            start_pt = tuple(float(v) for v in entry.get("from", (0.0, 0.0)))
+            end_pt = tuple(float(v) for v in entry.get("to", (0.0, 0.0)))
+            segments.append({
+                "kind": "drive",
+                "distance_mm": round(distance, 1),
+                "v": speed,
+                "arrival_reverse": True,
+                "th": round(g.deg_norm180(heading), 1),
+                "points": [
+                    [round(start_pt[0], 1), round(start_pt[1], 1)],
+                    [round(end_pt[0], 1), round(end_pt[1], 1)],
+                ],
+            })
+            reference.extend([start_pt, end_pt])
+            samples_all.extend([start_pt, end_pt])
+            length_mm += abs(distance)
+            est_s += abs(distance) / max(float(speed), 1.0)
+            prev_kind = "drive"
+            continue
         if entry["kind"] == "rotate":
             # per-step speed override: "turn THIS one slowly", every other
             # step keeps the system turn speed (clamped to the protocol range)
@@ -1378,6 +1962,16 @@ def plan(
             continue
         if entry["kind"] == "release":
             segments.append({"kind": "release"})
+            continue
+        if entry["kind"] == "game_element":
+            segment = {
+                "kind": "game_element",
+                "action": entry["action"],
+                "name": entry["name"],
+            }
+            if entry.get("obstacle") is not None:
+                segment["obstacle"] = dict(entry["obstacle"])
+            segments.append(segment)
             continue
 
         segments_before = len(segments)
@@ -1610,29 +2204,98 @@ def plan(
         if segments:
             prev_kind = segments[-1]["kind"]
 
-    # a near-straight run is ONE straight move, not an alternating S of tiny
-    # flat arcs: the real robot read that as acceleration/deceleration and
-    # unnecessary turns. Merge before the junction smoother so the remaining
-    # corners (the real curves) still get their connector arcs.
-    straight_merged = _merge_straight_runs(segments, start)
+    # the OPENING never pivots: a mission whose first node lies beside or
+    # behind the robot used to start with a full stop-and-turn, then a
+    # straight, then the first curve. A short straight along the CURRENT
+    # heading plus ONE arc that joins the first leg tangentially drives that
+    # as one continuous move ("the robot could perform a short forward then
+    # start curves"). Refused when the arc cannot leave the node on the
+    # route's own heading - a corrective stop there would only move the stop.
+    launch_fillet: Optional[Dict] = None
+    if (
+        start_heading_deg is not None
+        and not options.resume_mid_mission
+        and options.smooth_launch
+    ):
+        launch_fillet = _launch_fillet(
+            segments, samples_all, launch_start, start_heading_deg, options,
+            lambda points: arc_stays_legal(points) or arc_body_clear(points),
+            skip=launch_skip,
+        )
+        if launch_fillet is not None:
+            delta_mm = float(launch_fillet.get("delta_mm", 0.0))
+            if abs(delta_mm) > 1e-6:
+                length_mm += delta_mm
+                est_s += delta_mm / max(float(options.speed_mm_s), 1.0)
+            opening_text = (
+                "a {:.0f} mm straight then one {:.0f} deg arc (R {:.0f} mm)".format(
+                    launch_fillet["lead"], abs(launch_fillet["sweep"]),
+                    abs(launch_fillet["radius"]),
+                )
+                if launch_fillet["lead"] >= 1.0
+                else "one {:.0f} deg launch arc (R {:.0f} mm)".format(
+                    abs(launch_fillet["sweep"]), abs(launch_fillet["radius"])
+                )
+            )
+            warnings.append(
+                "the mission launches with {} instead of a {:.0f} deg in-place "
+                "turn (no stop at the start)".format(
+                    opening_text, abs(launch_fillet["pivot"])
+                )
+            )
 
     # smooth the fitted-arc junctions: a small tangent break is rounded with a
     # connector arc tangent to both neighbours (corner rounding) instead of an
     # in-place TURN - the chain then drives as ONE continuous move (the
     # console executes consecutive ARCs with QUEUE_ARC, no stop in between).
-    # Big breaks / explicit rotations keep the turn (fallback, see the doc).
-    _smooth_arc_junctions(segments, options, arc_stays_legal)
+    # This runs BEFORE the straight merge so an ARC -> straight junction is
+    # rounded too (a merged GOTO has no entry tangent for the connector to
+    # join). A connector is accepted inside the routing margin when its exact
+    # rotated body stays clear - the tight corridor next to an obstacle was
+    # pivoting for nothing. Big breaks / explicit rotations keep the turn
+    # (fallback, see the doc).
+    _smooth_arc_junctions(
+        segments,
+        options,
+        lambda points: arc_stays_legal(points) or arc_body_clear(points),
+    )
+
+    # a near-straight run is ONE straight move, not an alternating S of tiny
+    # flat arcs: the real robot read that as acceleration/deceleration and
+    # unnecessary turns. Smoothed junction connectors are never folded into
+    # that straight (they are the tangent joints themselves).
+    straight_merged = _merge_straight_runs(segments, start)
 
     # the OPENING: a robot that stands at (or a few cm from) the start of the
     # drawing gets a tangent connector ARC instead of the turn-drive-turn
     # dance into the first curve ("the first turn is annoying, it should be
     # smoother") - one continuous move from standstill onto the drawn circle
+    woven = False
     if start_heading_deg is not None and not options.resume_mid_mission:
-        if _launch_weave(segments, samples_all, start, start_heading_deg, arc_stays_legal):
+        woven = _launch_weave(
+            segments, samples_all, launch_start, start_heading_deg, arc_stays_legal,
+            skip=launch_skip,
+            # the straight departure that got the robot out of its start box
+            # is not part of the lead the weave replaces
+            max_lead_mm=LAUNCH_WEAVE_MAX_LEAD_MM + launch_lead_mm,
+        )
+        if woven:
             warnings.append(
                 "the mission starts with a smooth connector arc onto the first curve "
                 "(no stop-and-turn launch)"
             )
+    # no gentle launch exists and the robot cannot turn where it stands: plan
+    # again with the straight escape move in front of everything
+    if (
+        not woven
+        and launch_fillet is None
+        and start_escape is not None
+        and not start_departure_pass
+    ):
+        return plan(
+            elements, start_pose, goal, obstacles, options,
+            field_width_mm, field_height_mm, _start_departure=True,
+        )
 
     # a hand drawn switchback (a cusp tighter than any drivable arc) came out
     # of the sampler as a run of tiny GOTO nodes: the board stops at every one
@@ -1776,11 +2439,12 @@ def plan(
         )
 
     if n_gotos == 0 and n_arcs == 0 and goal is None and not any(
-        segment["kind"] in ("turn", "pause", "release") for segment in segments
+        segment["kind"] in ("turn", "pause", "release", "game_element")
+        for segment in segments
     ):
-        # (an ACTIONS-ONLY mission - just a rotation, a pause or a motor
-        # release - is a legitimate program; only a plan with NOTHING to
-        # execute is refused)
+        # (an ACTIONS-ONLY mission - a rotation, a pause, a motor release or a
+        # game-element action - is a legitimate program; only a plan with
+        # NOTHING to execute is refused)
         raise ValueError("no usable stroke - draw a path first")
 
     n_gotos = sum(1 for segment in segments if segment["kind"] == "goto")
@@ -3151,6 +3815,8 @@ def _round_arc_junction(
         "th0_deg": round(g.deg_norm180(_circle_tangent_deg(a_pt, oc, radius, ccw=best["sweep"] > 0.0)), 1),
         "v": int(cruise),
         "points": [[round(x, 1), round(y, 1)] for x, y in best["samples"]],
+        # a tangent joint, not a straight run: the straight merger must keep it
+        "junction_connector": True,
     }
     return [prev_new, connector, next_new]
 
@@ -3701,6 +4367,8 @@ def _launch_weave(
     start: Point,
     start_heading_deg: float,
     stays_legal,
+    skip: int = 0,
+    max_lead_mm: float = LAUNCH_WEAVE_MAX_LEAD_MM,
 ) -> bool:
     """Weave the opening into ONE connector arc tangent to the first curve.
 
@@ -3731,7 +4399,7 @@ def _launch_weave(
             for k in range(steps + 1)
         ]
 
-    index = 0
+    index = max(0, int(skip))
     while index < len(segments) and segments[index]["kind"] == "pause":
         index += 1
     first_motion = index
@@ -3752,11 +4420,13 @@ def _launch_weave(
             index += 1
         else:
             break
-    if lead_len > LAUNCH_WEAVE_MAX_LEAD_MM or index >= len(segments):
+    if lead_len > max_lead_mm or index >= len(segments):
         return False
     if segments[index]["kind"] != "arc":
         return False
     arc = segments[index]
+    if arc.get("launch_fillet"):
+        return False  # the opening is already a generated launch curve
     r2 = float(arc["radius_mm"])
     th0 = float(arc["th0_deg"])
     c2 = _arc_center((float(arc["x0"]), float(arc["y0"])), th0, r2)
@@ -3843,6 +4513,307 @@ def _launch_weave(
     return True
 
 
+def _point_line_distance(point: Point, a: Point, b: Point) -> float:
+    """Distance of ``point`` from the infinite line through ``a`` and ``b``."""
+    length = math.dist(a, b)
+    if length < 1e-6:
+        return math.dist(point, a)
+    return abs(
+        (b[0] - a[0]) * (a[1] - point[1]) - (a[0] - point[0]) * (b[1] - a[1])
+    ) / length
+
+
+def _launch_fillet(
+    segments: List[Dict],
+    samples_all: List[Point],
+    start: Point,
+    start_heading_deg: float,
+    options: "PlanOptions",
+    stays_legal,
+    skip: int = 0,
+) -> Optional[Dict]:
+    """Open the mission with a straight and ONE arc - never an in-place turn.
+
+    A mission can open with a pivot: the first node of the route lies beside
+    or behind the robot (the drawing start is elsewhere, the corridor to it
+    runs along a border). The board then stops, rotates, drives, stops again -
+    "the robot could perform a short forward then start curves". This pass
+    replaces the whole opening (leading non-explicit TURNs and the straight
+    legs they fed) with a straight along the CURRENT heading and one arc that
+    joins the line into a route node TANGENTIALLY, so the chain drives as one
+    continuous move.
+
+    The (lead, radius) pair is scanned and the SHORTEST legal opening wins;
+    the arc must leave the node facing the direction the route leaves it
+    (otherwise the runtime stops there to correct the kink), the straight
+    after the arc must be real, and the arc must clear the table. The route
+    nodes are emitted every ``goto_step_mm``, so the collinear ones behind the
+    first are folded into ONE target - a launch cannot curve onto a node that
+    is only 250 mm away. Returns the chosen geometry (for the warning text) or
+    None when the opening pivot has to stay.
+    """
+    index = max(0, int(skip))
+    while index < len(segments) and segments[index]["kind"] == "pause":
+        index += 1
+    first_motion = index
+    while index < len(segments) and segments[index]["kind"] == "turn":
+        if segments[index].get("explicit"):
+            return None  # a user rotation opens the mission: never eat it
+        index += 1
+    if index >= len(segments) or segments[index]["kind"] != "goto":
+        return None
+
+    #: the collinear route nodes the launch may consume, first one included
+    targets: List[Tuple[int, Point]] = []
+    for scan in range(index, min(index + LAUNCH_FILLET_MAX_TARGETS, len(segments))):
+        segment = segments[scan]
+        if segment["kind"] != "goto":
+            break
+        point = (float(segment["x"]), float(segment["y"]))
+        if targets and any(
+            _point_line_distance(other, start, point) > LAUNCH_FILLET_MERGE_TOL_MM
+            for _, other in targets
+        ):
+            break  # the route bends here: it is a real corner, not filler
+        targets.append((scan, point))
+
+    rad = math.radians(start_heading_deg)
+    ux, uy = math.cos(rad), math.sin(rad)
+    normal = (-uy, ux)
+    min_radius = max(float(options.arc_min_radius_mm), ARC_WIRE_MIN_RADIUS_MM)
+    max_radius = min(LAUNCH_FILLET_MAX_RADIUS_MM, float(ARC_WIRE_MAX_RADIUS_MM))
+
+    def scan_launch(
+        node: Point, target_heading: float, first_radius: float
+    ) -> Optional[Dict]:
+        """Shortest continuous opening whose arc is at least ``first_radius``."""
+        found: Optional[Dict] = None
+        # both turn directions are tried: the shorter way round the heading is
+        # not always the cheaper opening (the other side may be the one with
+        # room between the border and an obstacle)
+        for side in (1.0, -1.0):
+            lead = 0.0
+            while lead <= LAUNCH_FILLET_MAX_LEAD_MM + 1e-6:
+                lead_point = (start[0] + ux * lead, start[1] + uy * lead)
+                radius = first_radius
+                while radius <= max_radius + 1e-6:
+                    centre = (
+                        lead_point[0] + side * radius * normal[0],
+                        lead_point[1] + side * radius * normal[1],
+                    )
+                    vx, vy = node[0] - centre[0], node[1] - centre[1]
+                    distance = math.hypot(vx, vy)
+                    if distance > radius + 1.0:
+                        phi = math.degrees(math.atan2(vx, -vy))
+                        alpha = math.degrees(math.acos(min(1.0, radius / distance)))
+                        for theta in (phi + alpha, phi - alpha):
+                            # the sweep stays UNWRAPPED: a >180 deg launch arc
+                            # is a real arc, deg_norm180 would fold it over
+                            if side > 0.0:
+                                sweep = (theta - start_heading_deg) % 360.0
+                            else:
+                                sweep = -((start_heading_deg - theta) % 360.0)
+                            if abs(sweep) < LAUNCH_FILLET_MIN_TURN_DEG:
+                                continue
+                            if abs(sweep) > float(options.arc_max_sweep_deg):
+                                continue
+                            if sweep * side <= 0.0:
+                                continue
+                            heading = math.radians(theta)
+                            direction = (math.cos(heading), math.sin(heading))
+                            joined = (
+                                centre[0] + side * radius * math.sin(heading),
+                                centre[1] - side * radius * math.cos(heading),
+                            )
+                            leg = (node[0] - joined[0], node[1] - joined[1])
+                            leg_length = math.hypot(leg[0], leg[1])
+                            if leg_length < LAUNCH_FILLET_MIN_LEG_MM:
+                                continue
+                            if leg[0] * direction[0] + leg[1] * direction[1] <= 0.0:
+                                continue  # the straight would run backwards
+                            if (
+                                abs(g.deg_norm180(theta - target_heading))
+                                > LAUNCH_FILLET_MAX_KINK_DEG
+                            ):
+                                continue  # the node would need a corrective turn
+                            total = (
+                                lead + abs(math.radians(sweep)) * radius + leg_length
+                            )
+                            # a launch this much longer than the straight the
+                            # pivot replaced is a detour, not a launch
+                            if total > math.dist(start, node) + LAUNCH_FILLET_MAX_EXTRA_MM:
+                                continue
+                            arc_points = _arc_polyline(
+                                centre, side * radius, start_heading_deg, sweep
+                            )
+                            checked = [
+                                point for point in arc_points
+                                if math.dist(point, start) > LAUNCH_WEAVE_LEGAL_SKIP_MM
+                            ]
+                            if checked and not stays_legal(checked):
+                                continue
+                            if found is None or total < found["total"] - 1e-6:
+                                found = {
+                                    "total": total,
+                                    "lead": lead,
+                                    "lead_point": lead_point,
+                                    "radius": side * radius,
+                                    "sweep": sweep,
+                                    "theta": theta,
+                                    "joined": joined,
+                                    "leg_length": leg_length,
+                                    "points": arc_points,
+                                }
+                    radius += LAUNCH_FILLET_RADIUS_STEP_MM
+                lead += LAUNCH_FILLET_LEAD_STEP_MM
+        return found
+
+    best: Optional[Dict] = None
+    tight: Optional[Dict] = None
+    comfort_radius = max(
+        min_radius, LAUNCH_FILLET_COMFORT_RATIO * float(options.corner_radius_mm)
+    )
+    for target_index, node in targets:
+        node_distance = math.dist(start, node)
+        if node_distance < LAUNCH_FILLET_MIN_NODE_MM:
+            continue
+        bearing = math.degrees(math.atan2(node[1] - start[1], node[0] - start[0]))
+        pivot = g.deg_norm180(bearing - start_heading_deg)
+        if abs(pivot) < LAUNCH_FILLET_MIN_TURN_DEG:
+            continue  # the robot already drives roughly where the route goes
+        # the heading the route LEAVES the node with: a launch arc that exits
+        # on any other bearing leaves the next ARC's circle off its tangent
+        # (the runtime would stop at the node to correct it)
+        target_heading = bearing
+        follower = (
+            segments[target_index + 1] if target_index + 1 < len(segments) else None
+        )
+        if follower is not None:
+            if follower.get("kind") == "arc" and "th0_deg" in follower:
+                target_heading = float(follower["th0_deg"])
+            elif follower.get("kind") == "goto":
+                follow_point = (float(follower["x"]), float(follower["y"]))
+                if math.dist(node, follow_point) > 1.0:
+                    target_heading = math.degrees(
+                        math.atan2(
+                            follow_point[1] - node[1], follow_point[0] - node[0]
+                        )
+                    )
+                elif "th" in follower:
+                    target_heading = float(follower["th"])
+            elif "th" in segments[target_index]:
+                target_heading = float(segments[target_index]["th"])
+        # "short forward then start curves" must be a DRIVABLE curve, not the
+        # tightest one that fits: a comfortable radius (the drawn-corner
+        # radius) always beats a tighter arc, even a shorter one - a 60 mm
+        # "arc" is a spin on the spot, which is what the pivot already was.
+        # The bare minimum is used only when no target offers anything better.
+        candidate = scan_launch(node, target_heading, comfort_radius)
+        if candidate is not None:
+            if best is None or candidate["total"] < best["total"] - 1e-6:
+                candidate["node"] = node
+                candidate["target_index"] = target_index
+                candidate["pivot"] = pivot
+                best = candidate
+            continue
+        candidate = scan_launch(node, target_heading, min_radius)
+        if candidate is None:
+            continue
+        if tight is None or candidate["total"] < tight["total"] - 1e-6:
+            candidate["node"] = node
+            candidate["target_index"] = target_index
+            candidate["pivot"] = pivot
+            tight = candidate
+    if best is None:
+        best = tight
+    if best is None:
+        return None
+
+    node = best["node"]
+    index = int(best["target_index"])
+    replaced = segments[index]
+    speed = int(replaced.get("v", options.min_speed_mm_s))
+    removed = 0.0
+    cursor = start
+    for segment in segments[first_motion : index + 1]:
+        if segment["kind"] == "goto":
+            point = (float(segment["x"]), float(segment["y"]))
+            removed += math.dist(cursor, point)
+            cursor = point
+    best["delta_mm"] = (
+        best["lead"]
+        + abs(math.radians(best["sweep"])) * abs(best["radius"])
+        + best["leg_length"]
+        - removed
+    )
+
+    opening: List[Dict] = []
+    if best["lead"] >= 1.0:
+        opening.append(
+            {
+                "kind": "goto",
+                "x": round(best["lead_point"][0], 1),
+                "y": round(best["lead_point"][1], 1),
+                "th": round(g.deg_norm180(start_heading_deg), 1),
+                "v": speed,
+            }
+        )
+    opening.append(
+        {
+            "kind": "arc",
+            "x0": round(best["lead_point"][0], 1),
+            "y0": round(best["lead_point"][1], 1),
+            "x1": round(best["joined"][0], 1),
+            "y1": round(best["joined"][1], 1),
+            "radius_mm": round(best["radius"], 1),
+            "sweep_deg": round(best["sweep"], 1),
+            "th0_deg": round(g.deg_norm180(start_heading_deg), 1),
+            "th1_deg": round(g.deg_norm180(best["theta"]), 1),
+            "v": speed,
+            "launch_fillet": True,
+            "points": [[round(x, 1), round(y, 1)] for x, y in best["points"]],
+        }
+    )
+    opening.append(
+        {
+            "kind": "goto",
+            "x": round(node[0], 1),
+            "y": round(node[1], 1),
+            "th": round(g.deg_norm180(best["theta"]), 1),
+            "v": speed,
+        }
+    )
+    segments[first_motion : index + 1] = opening
+    # the preview path: everything up to the node is the new opening
+    join = None
+    for k, point in enumerate(samples_all):
+        if math.dist(point, node) <= 1.5:
+            join = k
+            break
+    prefix: List[Point] = [tuple(start)]
+    if best["lead"] >= 1.0:
+        prefix.append(tuple(best["lead_point"]))
+    prefix.extend(best["points"])
+    prefix.append(tuple(node))
+    if join is not None:
+        samples_all[:] = prefix + [tuple(p) for p in samples_all[join + 1:]]
+    return best
+
+def _arc_polyline(
+    center: Point, signed_r: float, th0_deg: float, sweep_deg: float,
+    max_step_deg: float = 10.0,
+) -> List[Point]:
+    """Sample an ARC the way the planner stores it (see ``_launch_weave``)."""
+    steps = max(1, int(abs(sweep_deg) / max_step_deg) + 1)
+    return [
+        (
+            center[0] + signed_r * math.sin(math.radians(th0_deg + sweep_deg * k / steps)),
+            center[1] - signed_r * math.cos(math.radians(th0_deg + sweep_deg * k / steps)),
+        )
+        for k in range(steps + 1)
+    ]
+
+
 #: a run flatter than this (huge radius, tiny sweep) is a straight line the
 #: board would otherwise drive as an alternating S of 8+ arcs - one GOTO is
 #: smoother (one acceleration, one deceleration) and exactly on the chord
@@ -3872,7 +4843,7 @@ def _is_flat_segment(segment: Dict) -> bool:
     kind = segment.get("kind")
     if kind == "goto":
         return True
-    if kind != "arc":
+    if kind != "arc" or segment.get("junction_connector"):
         return False
     return (
         abs(float(segment.get("radius_mm", 0.0))) >= STRAIGHT_MERGE_MIN_RADIUS_MM
@@ -4292,6 +5263,10 @@ def build_grid(
             grid.add_rect(float(obstacle["x"]), float(obstacle["y"]), float(obstacle["w"]), float(obstacle["h"]))
         elif kind == "circle":
             grid.add_circle(float(obstacle["x"]), float(obstacle["y"]), float(obstacle["r"]))
+        elif kind == "polygon":
+            points = [(float(p[0]), float(p[1])) for p in obstacle.get("points") or [] if len(p) >= 2]
+            if len(points) >= 3:
+                grid.add_polygon(points)
     return grid
 
 

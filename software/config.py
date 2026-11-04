@@ -86,7 +86,7 @@ class Settings:
     field_height_mm: float = _env_float("FIELD_HEIGHT_MM", 2000.0)
 
     # Planning defaults (overridable per request) -------------------------
-    default_speed_mm_s: float = _env_float("DEFAULT_SPEED_MM_S", 500.0)
+    default_speed_mm_s: float = _env_float("DEFAULT_SPEED_MM_S", 350.0)
     default_accel_mm_s2: float = _env_float("DEFAULT_ACCEL_MM_S2", 700.0)
     default_decel_mm_s2: float = _env_float("DEFAULT_DECEL_MM_S2", 700.0)
     default_lat_accel_mm_s2: float = _env_float("DEFAULT_LAT_ACCEL_MM_S2", 300.0)
@@ -157,6 +157,25 @@ class Settings:
     # Where strategy documents live (shared by the console and the brain):
     # one JSON file per strategy, see ``software.core.mission.strategy``.
     strategy_dir: str = os.environ.get("STRATEGY_DIR", str(REPO_ROOT / "strategies"))
+
+    # Map configuration ----------------------------------------------------
+    # The editable map document (table size, background artwork, team start
+    # zones) and the folder the background images are picked from. The docker
+    # console points both at the data volume / the bundled web app.
+    map_config_file: str = os.environ.get(
+        "MAP_CONFIG_FILE", str(REPO_ROOT / "map" / "map.json")
+    )
+    field_dir: str = os.environ.get(
+        "FIELD_DIR", str(REPO_ROOT / "ui" / "static" / "field")
+    )
+    #: Rasterised PDF backgrounds (a table published as PDF is rendered once
+    #: and cached here - next to the map document, so it survives restarts).
+    map_cache_dir: str = os.environ.get(
+        "MAP_CACHE_DIR",
+        str(Path(map_config_file).parent / "cache")
+        if os.environ.get("MAP_CONFIG_FILE")
+        else str(REPO_ROOT / "map" / "cache"),
+    )
 
     # Teams ----------------------------------------------------------------
     # Eurobot plays two sides whose names/colours rotate between editions.

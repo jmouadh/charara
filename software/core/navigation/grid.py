@@ -17,6 +17,8 @@ import itertools
 import math
 from typing import Dict, List, Optional, Sequence, Tuple
 
+from .polygon import distance_to_polygon
+
 Point = Tuple[float, float]
 
 
@@ -102,6 +104,29 @@ class OccupancyGrid:
                 if (cx - x) ** 2 + (cy - y) ** 2 <= rr2:
                     self.blocked[row * self.cols + col] = 1
 
+    def add_polygon(self, points: Sequence[Point]) -> None:
+        """Block a custom shape grown by the inflation radius.
+
+        Cell centres are tested against the real outline (Euclidean, inside
+        test included), so a triangle or any hand-drawn shape blocks exactly
+        what it covers plus the clearance.
+        """
+        pts = [(float(p[0]), float(p[1])) for p in points]
+        if len(pts) < 3:
+            return
+        pad = self.inflate
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        c0 = int((min(xs) - pad) / self.res) - 1
+        c1 = int(math.ceil((max(xs) + pad) / self.res)) + 1
+        r0 = int((min(ys) - pad) / self.res) - 1
+        r1 = int(math.ceil((max(ys) + pad) / self.res)) + 1
+        for row in range(max(0, r0), min(self.rows, r1 + 1)):
+            for col in range(max(0, c0), min(self.cols, c1 + 1)):
+                cx, cy = self.cell_center(col, row)
+                if distance_to_polygon(cx, cy, pts) <= pad:
+                    self.blocked[row * self.cols + col] = 1
+
     # ------------------------------------------------------------- queries
     def cell_center(self, col: int, row: int) -> Point:
         """Millimetre centre of cell (cx, cy)."""
@@ -125,12 +150,31 @@ class OccupancyGrid:
         return self.is_free_cell(col, row)
 
     def los(self, a: Point, b: Point) -> bool:
-        """Conservative line-of-sight: sample the segment every res/3 mm."""
-        dist = math.dist(a, b)
-        steps = max(2, int(dist / (self.res / 3.0)))
+        """Conservative line-of-sight: sample the segment every res/3 mm.
+
+        The bounds/``to_cell``/``is_free_cell`` helpers are inlined: Theta*
+        calls this once per neighbour expansion and the method-call overhead
+        was the planner's single biggest cost (~0.5 s of a Pi re-plan).
+        """
+        dx = float(b[0]) - float(a[0])
+        dy = float(b[1]) - float(a[1])
+        steps = max(2, int(math.hypot(dx, dy) / (self.res / 3.0)))
+        cols, rows = self.cols, self.rows
+        blocked = self.blocked
+        width, height, res = self.width, self.height, self.res
+        ax, ay = float(a[0]), float(a[1])
         for i in range(steps + 1):
-            t = i / steps
-            if not self.is_free_mm(a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t):
+            x = ax + dx * (i / steps)
+            y = ay + dy * (i / steps)
+            if x < 0.0 or y < 0.0 or x >= width or y >= height:
+                return False
+            col = int(x / res)
+            if col >= cols:
+                col = cols - 1
+            row = int(y / res)
+            if row >= rows:
+                row = rows - 1
+            if blocked[row * cols + col]:
                 return False
         return True
 

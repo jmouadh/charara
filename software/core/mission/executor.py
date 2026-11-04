@@ -54,6 +54,9 @@ EXEC_ABORTED = "aborted"
 CAUTION_MIN_SCALE = 0.2
 #: no motion command is ever sent slower than this (the board's own floor)
 CAUTION_MIN_SPEED_MM_S = 30
+#: action segments that HOLD the robot in place without changing its pose;
+#: a close-waypoint reverse departure stays ahead across them
+_HOLD_KINDS = ("pause", "release", "game_element")
 #: a run that ends farther than this from the planned end gets one small
 #: closed-loop correction GOTO (wheel slip / a cut arc corner used to leave
 #: the robot 30-40 mm short of the drawn waypoint)
@@ -162,6 +165,14 @@ def remaining_elements(
             # fabricated (0, 0) that would route the robot to the field corner
             continue
         flush()
+        if kind == "game_element":
+            action = str(segment.get("action") or "")
+            if action in ("erase", "spawn"):
+                element = {"kind": action, "name": str(segment.get("name") or "")}
+                if segment.get("obstacle") is not None:
+                    element["obstacle"] = dict(segment["obstacle"])
+                elements.append(element)
+            continue
         if kind == "turn":
             elements.append({"kind": "rotate", "angle_deg": float(segment.get("angle_deg", 0.0))})
         elif kind == "pause":
@@ -231,6 +242,12 @@ def follow_final_pose(segments: Sequence[Dict]) -> Optional[Tuple[float, float, 
     """The plan's final ``(x, y, heading)`` from its last motion segment."""
     for segment in reversed(segments):
         kind = segment.get("kind")
+        if kind in ("drive", "strafe"):
+            # a RELATIVE move has no absolute exit: only the board knows where
+            # it ends, so there is nothing to correct towards. Returning the
+            # last absolute node instead dragged the robot BACK there at the
+            # end of every run that finished with a drive/strafe.
+            return None
         if kind == "goto" and "x" in segment and "y" in segment:
             return (
                 float(segment["x"]),
@@ -246,6 +263,11 @@ def follow_final_pose(segments: Sequence[Dict]) -> Optional[Tuple[float, float, 
     return None
 
 
+def needs_game_element_actions(segments: Sequence[Dict]) -> bool:
+    """Does the program contain an erase/spawn of a named game element?"""
+    return any(segment.get("kind") == "game_element" for segment in segments)
+
+
 def needs_in_place_actions(segments: Sequence[Dict]) -> bool:
     """Does the program need an action the path polyline cannot encode?
 
@@ -258,11 +280,12 @@ def needs_in_place_actions(segments: Sequence[Dict]) -> bool:
     """
     for index, segment in enumerate(segments):
         kind = segment.get("kind")
-        if kind in ("turn", "pause", "drive", "strafe", "release"):
+        if kind in ("turn", "pause", "drive", "strafe", "release", "game_element"):
             # a raw drive/strafe is not polyline data: a close-waypoint
             # departure (reverse out, turn, continue) must run on the segment
             # backend, never be silently dropped by the follower; the same
-            # holds for a motor release (the follower only drives geometry)
+            # holds for a motor release and a game-element erase/spawn (the
+            # follower only drives geometry)
             return True
         if segment.get("close_waypoint") or segment.get("close_connector"):
             # a close-waypoint final leg was validated for a STRAIGHT body
@@ -300,6 +323,20 @@ PROGRAM_KINK_TOL_DEG = 5.0
 #: board's I2C recovery storms hit the bus every ~10 s on the real robot and
 #: a single missed poll must not kill a healthy run (poll_s * this ~= 2.5 s).
 TELEMETRY_FAILURE_LIMIT = 25
+#: A pause/resume sends what is LEFT of the interrupted segment; below these
+#: amounts there is nothing meaningful left (the firmware rejects short ARC
+#: sweeps / DRIVE distances anyway).
+RESUME_MIN_TURN_DEG = 0.6
+RESUME_MIN_DISTANCE_MM = 2.0
+#: A BUSY answer to the chained-ARC queue is retried after this long: the
+#: board's pending slot frees within one poll of a segment completing, and
+#: hammering it every poll turned the log into a BUSY_REJECT wall.
+CHAIN_PUMP_RETRY_S = 0.12
+
+
+def _wrap_deg(angle: float) -> float:
+    """Normalize an angle to (-180, 180]."""
+    return (angle + 180.0) % 360.0 - 180.0
 
 
 def repair_program(
@@ -350,7 +387,7 @@ def repair_program(
             repaired.append(segment)
         elif kind == "pause":
             repaired.append(segment)
-        elif kind == "release":
+        elif kind in ("release", "game_element"):
             # no geometry and no heading change: keep the chain verified
             repaired.append(segment)
         elif kind == "arc":
@@ -445,6 +482,7 @@ class Executor:
         self._event_sink: Optional[EventSink] = None
         self._chained_indices: List[int] = []  # segments the board already runs/runs
         self._chain_extra_s = 0.0              # watchdog budget of those segments
+        self._chain_next_try = 0.0              # earliest next QUEUE_ARC attempt
         self._chain_supported = True           # board accepts QUEUE_ARC
         self._no_chain: set = set()            # segments the board refused to queue
         self._sent_count = 0                   # board segments sent/queued this run
@@ -455,6 +493,13 @@ class Executor:
         self._follow_active = False            # current/last run uses the stream
         self._stream_speed = 0.0               # its cruise speed [mm/s]
         self._follow_bounds: Optional[Tuple[float, float, float]] = None  # stream geofence
+        #: pose recorded when the CURRENT segment was sent: a pause/resume
+        #: finishes that segment with what is left of it, and "Redo" while
+        #: paused drives the robot back to this point
+        self._segment_pose: Optional[Tuple[float, float, float]] = None
+        #: optional async callback for a game-element erase/spawn action:
+        #: the host updates its live obstacle map (and logs/broadcasts it)
+        self._game_element_hook: Optional[Callable[[Dict], Awaitable[None]]] = None
 
     # ----------------------------------------------------------- plumbing
     def set_event_sink(self, sink: Optional[EventSink]) -> None:
@@ -524,22 +569,58 @@ class Executor:
         close waypoint (the departure is the next segment there). 0 when no
         close-waypoint departure is current/next. Used by the mid-run
         re-plan to finish the reverse before turning.
+
+        The HELD actions at the waypoint (a DELAY / a motor release) do not
+        end the hold: a re-plan while the robot waits on the close waypoint
+        must still back up first (2026-10-23: a camera re-plan during the
+        waypoint delay dropped the reverse and the robot then had to rotate
+        in place there, clipped the wall and stayed stopped for good).
+        """
+        index = self._departure_index()
+        if index is None:
+            return 0.0
+        segment = self._segments[index]
+        if index == self._index:
+            return remaining_drive_mm(segment, position)
+        return float(segment.get("distance_mm", 0.0))
+
+    def _departure_index(self) -> Optional[int]:
+        """Index of the reverse departure the current segment still owns.
+
+        ``None`` when the run is not on a close waypoint hold. A hold is the
+        close-waypoint GOTO itself or the pause/release actions placed at
+        that waypoint before the signed DRIVE.
         """
         if not (0 <= self._index < len(self._segments)):
-            return 0.0
+            return None
         segment = self._segments[self._index]
-        if segment.get("kind") == "drive" and segment.get("departure"):
-            return remaining_drive_mm(segment, position)
-        # the last straight leg onto the close point: the departure is ahead
-        if (
-            segment.get("kind") == "goto"
-            and segment.get("close_waypoint")
-            and self._index + 1 < len(self._segments)
-        ):
-            nxt = self._segments[self._index + 1]
-            if nxt.get("kind") == "drive" and nxt.get("departure"):
-                return float(nxt.get("distance_mm", 0.0))
-        return 0.0
+        kind = segment.get("kind")
+        if kind == "drive":
+            return self._index if segment.get("departure") else None
+        if kind == "goto":
+            if not segment.get("close_waypoint"):
+                return None
+            index = self._index + 1
+        elif kind in _HOLD_KINDS:
+            # only a delay HELD ON the close waypoint owns the departure:
+            # look back for the waypoint this pause belongs to
+            previous = self._index - 1
+            while previous >= 0 and self._segments[previous].get("kind") in _HOLD_KINDS:
+                previous -= 1
+            if previous < 0:
+                return None
+            before = self._segments[previous]
+            if before.get("kind") != "goto" or not before.get("close_waypoint"):
+                return None
+            index = self._index + 1
+        else:
+            return None
+        while index < len(self._segments) and self._segments[index].get("kind") in _HOLD_KINDS:
+            index += 1
+        if index >= len(self._segments):
+            return None
+        nxt = self._segments[index]
+        return index if nxt.get("kind") == "drive" and nxt.get("departure") else None
 
     async def _emit(self, **data) -> None:
         """Send one exec event through the sink (errors swallowed)."""
@@ -580,6 +661,18 @@ class Executor:
         for segment in reversed(segments):
             kind = segment.get("kind")
             try:
+                if kind == "drive" and segment.get("arrival_reverse"):
+                    # a close-waypoint arrival driven backwards: its planned
+                    # exit is a real target (the heading is the arrival angle)
+                    points = segment.get("points") or []
+                    if points:
+                        target = (
+                            float(points[-1][0]),
+                            float(points[-1][1]),
+                            float(segment.get("th", 0.0)),
+                        )
+                        break
+                    continue
                 if kind == "arc" and "x1" in segment:
                     target = (
                         float(segment["x1"]),
@@ -628,6 +721,7 @@ class Executor:
         follow_path: Optional[Sequence[Sequence[float]]] = None,
         follow_speed_mm_s: Optional[float] = None,
         follow_bounds: Optional[Tuple[float, float, float]] = None,
+        game_element_hook: Optional[Callable[[Dict], Awaitable[None]]] = None,
     ) -> None:
         """Begin a run; ``paused`` starts it stopped (waits for RESUME).
 
@@ -682,6 +776,7 @@ class Executor:
         self._follow_active = points is not None
         self._stream_speed = speed
         self._follow_bounds = follow_bounds
+        self._game_element_hook = game_element_hook
         self._state = EXEC_RUNNING
         # a fresh run starts at full speed: the caution reaction (dynamic
         # obstacle) is a mid-run decision and is re-applied within a tick
@@ -886,10 +981,25 @@ class Executor:
                     if not await self._do_release(i):
                         break
                     continue
+                if segment.get("kind") == "game_element":
+                    if not await self._do_game_element(segment, i):
+                        break
+                    continue
                 if segment.get("kind") == "pause":
                     if not await self._do_pause(segment, i):
                         break
                     continue
+                # remember where this action starts: a pause/resume finishes it
+                # from there and "Redo" (paused) drives the robot back to it
+                try:
+                    odometry = await self._client.odometry()
+                    self._segment_pose = (
+                        float(odometry.x_mm),
+                        float(odometry.y_mm),
+                        float(odometry.theta_deg),
+                    )
+                except RobotIOError:
+                    self._segment_pose = None
                 if not await self._send_segment(segment):
                     break
                 self._sent_count += 1
@@ -1048,6 +1158,7 @@ class Executor:
         """
         self._chained_indices = []
         self._chain_extra_s = 0.0
+        self._chain_next_try = 0.0
         self._sent_count = 0
         self._chain_supported = True
         self._no_chain = set()
@@ -1080,6 +1191,12 @@ class Executor:
             return
         if done_relative < self._sent_count - 1:
             return  # the pending slot is still occupied by the last queued arc
+        now = time.monotonic()
+        if now < self._chain_next_try:
+            # the board answered BUSY a moment ago: its single pending slot
+            # frees within one poll of a segment completing, so retrying at
+            # every poll only flooded the log with BUSY_REJECT lines
+            return
         nxt = segments[next_index]
         if nxt.get("kind") != "arc":
             return
@@ -1096,7 +1213,9 @@ class Executor:
                 # plan crawled for 29 s (real run 2026-10-07)
                 return
             if status == 0x04:
-                return  # BUSY: the slot is momentarily full, retry next poll
+                # BUSY: the slot is momentarily full - come back a beat later
+                self._chain_next_try = now + CHAIN_PUMP_RETRY_S
+                return
             if status == 0x03:
                 # UNKNOWN_CMD: an old board without QUEUE_ARC - no chaining
                 self._chain_supported = False
@@ -1171,6 +1290,46 @@ class Executor:
             )
             await asyncio.sleep(min(0.5, remaining))
 
+    async def _do_game_element(self, segment: Dict, index: int) -> bool:
+        """Run one erase/spawn action between two motion segments.
+
+        The action does not move the robot: the previous segment already
+        finished, so the host callback can update the live obstacle map
+        before the next segment is sent. The callback is mandatory - silently
+        skipping an obstacle change would drive the rest of the mission on a
+        map that no longer matches the table.
+        """
+        action = str(segment.get("action") or "")
+        name = str(segment.get("name") or "")
+        hook = self._game_element_hook
+        if hook is None:
+            self._message = (
+                f"game element {action or '?'} '{name}': no obstacle handler attached"
+            )
+            self._failure = self._message
+            await self._emit(status=EXEC_ABORTED, index=index, total=self._total,
+                             message=self._message)
+            self._abort = True
+            return False
+        try:
+            await hook(dict(segment))
+        except Exception as exc:  # a bad sequence/name must stop, not crash
+            self._message = f"game element {action} '{name}': {exc}"
+            self._failure = self._message
+            await self._emit(status=EXEC_ABORTED, index=index, total=self._total,
+                             message=self._message)
+            self._abort = True
+            return False
+        await self._note(f"game element '{name}' {action}ed - obstacle map updated")
+        await self._emit(
+            status=EXEC_RUNNING,
+            index=index,
+            total=self._total,
+            message=f"game element '{name}' {action}ed",
+            segment={"kind": "game_element", "action": action, "name": name},
+        )
+        return True
+
     async def _send_segment(self, segment: Dict) -> bool:
         """Send one segment to the robot port; False aborts the run.
 
@@ -1234,7 +1393,15 @@ class Executor:
                 await self._safe(lambda: self._client.stop())
                 return "abort"
             if self._pause:
-                return await self._handle_pause()
+                if await self._handle_pause(segment) == "abort":
+                    return "abort"
+                # the interrupted segment was re-sent with what was LEFT of it:
+                # keep watching the same node instead of dropping it (skipping
+                # it made the board start the NEXT segment from a pose the plan
+                # never expected - every relative ARC bent the path)
+                deadline = time.monotonic() + self._segment_timeout(segment)
+                telemetry_failures = 0
+                continue
             try:
                 odometry = await self._client.odometry()
                 telemetry_failures = 0
@@ -1275,8 +1442,17 @@ class Executor:
                 continue
             await asyncio.sleep(self._poll_s)
 
-    async def _handle_pause(self) -> str:
-        """Stop, publish the paused state, wait for resume; abort reported."""
+    async def _handle_pause(self, segment: Optional[Dict] = None) -> str:
+        """Stop, publish the paused state, wait for resume; abort reported.
+
+        ``segment`` is the motion the pause interrupted (None when the pause
+        landed between two segments): on resume the REST of that segment is
+        driven, so the plan continues exactly where it stopped. The old
+        behaviour skipped it and the next segment started from the pose the
+        robot happened to hold - an ARC is RELATIVE, so the whole path after
+        the pause bent away ("the robot changes the path and heads to the
+        next").
+        """
         self._chained_indices = []  # STOP clears the pending continuation
         self._chain_extra_s = 0.0
         self._sent_count = 0
@@ -1296,11 +1472,61 @@ class Executor:
             await asyncio.sleep(0.1)
         if self._abort:
             return "abort"
+        if segment is not None and str(segment.get("kind")) not in ("pause", "release"):
+            await self._resume_segment(segment)
         self._state = EXEC_RUNNING
         self._message = "resumed"
         await self._emit(status=EXEC_RUNNING, index=self._index, total=self._total, message=self._message)
         await self._resync_chain()
-        return "skipped"  # node was interrupted; continue with the next one
+        return "resumed"
+
+    async def _resume_segment(self, segment: Dict) -> None:
+        """Send what is LEFT of a segment interrupted by a pause.
+
+        ``goto`` is absolute (the board reaches the node from wherever it
+        stands), a ``turn``/``arc`` is sent with the remaining sweep and a
+        ``drive``/``strafe`` with the remaining distance, all measured against
+        the pose recorded when the segment was sent.
+        """
+        start = self._segment_pose
+        try:
+            odometry = await self._client.odometry()
+        except RobotIOError:
+            odometry = None
+        kind = str(segment.get("kind", "goto"))
+        speed = self._scaled(segment.get("v", 150))
+        if kind == "goto" or odometry is None or start is None:
+            # no reference to measure against: an absolute GOTO is still exact
+            await self._send_segment(segment)
+            return
+        x_mm, y_mm, theta_deg = float(odometry.x_mm), float(odometry.y_mm), float(odometry.theta_deg)
+        if kind == "turn":
+            remaining = _wrap_deg(start[2] + float(segment["angle_deg"]) - theta_deg)
+            if abs(remaining) >= RESUME_MIN_TURN_DEG:
+                await self._client.turn(remaining, speed)
+            return
+        if kind == "arc":
+            sweep = float(segment["sweep_deg"])
+            exit_heading = start[2] + sweep
+            remaining = _wrap_deg(exit_heading - theta_deg)
+            if math.copysign(1.0, remaining) != math.copysign(1.0, sweep):
+                return  # already past the exit heading: nothing left to drive
+            if abs(remaining) >= RESUME_MIN_TURN_DEG:
+                await self._client.arc(float(segment["radius_mm"]), remaining, speed)
+            return
+        if kind in ("drive", "strafe"):
+            distance = float(segment.get("distance_mm", 0.0))
+            heading = math.radians(start[2])
+            travelled = math.copysign(
+                (x_mm - start[0]) * math.cos(heading) + (y_mm - start[1]) * math.sin(heading),
+                distance,
+            )
+            remaining = distance - travelled
+            if abs(remaining) >= RESUME_MIN_DISTANCE_MM:
+                if kind == "drive":
+                    await self._client.drive(remaining, speed)
+                else:
+                    await self._client.strafe(remaining, speed)
 
     def _segment_timeout(self, segment: Dict) -> float:
         """Per-segment watchdog budget from length and speed."""

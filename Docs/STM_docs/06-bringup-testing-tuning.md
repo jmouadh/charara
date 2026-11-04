@@ -257,7 +257,8 @@ them across resets. `RESET_CONFIG` returns to these defaults.
       the first streaming-mode (`PathFollower`) field run.
 * The console's **Acceptance & readiness** card automates the square, arc
   and chain evaluations, the pre-run readiness list (mode, firmware, faults,
-  board log, saved settings, IMU bias/stream, start pose) and adds the
+  board log, saved settings, IMU bias/stream, the start zones of both teams
+  and the robot standing in its own start zone) and adds the
   rest-drift, turn-repeatability, loop-drift, speed/ramp and encoder audits
   plus the guided fault drills (deadman, e-stop); treat a FAIL there like a
   failed checklist item.

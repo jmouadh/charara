@@ -16,7 +16,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from software.core.mission.executor import EXEC_RUNNING  # noqa: E402
+from software.core.mission.executor import EXEC_RUNNING, Executor  # noqa: E402
 from software.core.mission.orchestrator import (  # noqa: E402
     _apply_resolved_waypoints,
     _assess_remaining_route,
@@ -26,10 +26,19 @@ from software.core.mission.orchestrator import (  # noqa: E402
     clip_gap_mm,
     elements_signature,
     execute_plan,
+    obstacle_behind_robot,
     resume_from_wait,
+    route_check_obstacles,
+    travel_direction,
 )
 from software.core.navigation import geometry as g  # noqa: E402
-from software.core.navigation.clearance import body_clear_at, waypoint_clearance  # noqa: E402
+from software.core.navigation.clearance import (  # noqa: E402
+    body_clear_at,
+    first_body_clip,
+    point_clearance,
+    turn_clearance,
+    waypoint_clearance,
+)
 from software.core.navigation.trajectory import _collapse_cusps  # noqa: E402
 from software.core.navigation.grid import NoPathError, OccupancyGrid, theta_star  # noqa: E402
 from software.core.navigation.options import PlanOptions  # noqa: E402
@@ -59,6 +68,8 @@ from software.core.navigation.trajectory import (  # noqa: E402
     _sanitize_arcs,
     _set_arrival_heading,
     _smooth_arc_junctions,
+    WAYPOINT_STANDOFF_STEP_MM,
+    WAYPOINT_STANDOFF_TURN_MARGIN_MM,
     plan,
 )
 
@@ -262,7 +273,12 @@ class LaunchWeaveTests(unittest.TestCase):
         return points
 
     def test_short_lead_is_woven_into_one_connector_arc(self):
-        """The opening becomes ONE tangent connector arc onto the first curve."""
+        """The opening becomes ONE tangent connector arc onto the first curve.
+
+        A robot standing inside the border strip can still launch like this:
+        the connector leaves holding the heading, driving FORWARD - no
+        in-place turn, so no straight escape move is needed.
+        """
         import math as _math
 
         # circle of the real mission's first drawn arc (fit of 2026-10-01)
@@ -307,7 +323,13 @@ class LaunchWeaveTests(unittest.TestCase):
         self.assertFalse(
             any("smooth connector arc" in warning for warning in result["warnings"])
         )
-        self.assertEqual(result["segments"][0]["kind"], "goto")
+        # the launch itself may curve (smooth launch), but it never hooks onto
+        # the drawn circle: the robot still drives the whole way to the drawing
+        self.assertGreaterEqual(
+            result["stats"]["length_mm"],
+            math.dist((1500.0, 800.0), (646.3, 1696.5)),
+            "the robot must still drive to the drawing start",
+        )
 
     def test_explicit_rotation_at_the_start_is_never_woven(self):
         """A user rotation opening the mission stays exactly as authored."""
@@ -1764,6 +1786,38 @@ class CloseWaypointTests(unittest.TestCase):
         )
         self.assertAlmostEqual(before["th"], -90.0, delta=1.0)
 
+    def test_final_rotation_keeps_real_room_to_the_border(self):
+        """The last turn before a close final leg is done well clear of the border.
+
+        Real last waypoint (2026-10-22): (1390, 1850) mm with a 90 deg arrival.
+        The bare turn clearance put the pre-rotation stand-off only 225 mm from
+        the border (7 mm of body-corner margin), so the robot turned almost on
+        the border line. The stand-off search must prefer a comfortably clear
+        point instead of the first minimally safe one.
+        """
+        waypoint = {"kind": "waypoint", "x": 1390.0, "y": 1850.0,
+                    "theta_deg": 90.0, "combine": True}
+        result = plan(
+            [waypoint], (1390.0, 1200.0, 90.0), None, [],
+            self.options(0.0), 3000.0, 2000.0,
+        )
+        motion = [s for s in result["segments"] if s["kind"] in ("goto", "arc")]
+        standoff, final = motion[-2], motion[-1]
+        self.assertEqual(final["kind"], "goto")
+        self.assertAlmostEqual(final["y"], 1850.0, delta=1.0)
+        self.assertAlmostEqual(standoff["th"], 90.0, delta=1.0)
+        self.assertGreaterEqual(
+            2000.0 - standoff["y"],
+            self.TURN_CLEARANCE + WAYPOINT_STANDOFF_TURN_MARGIN_MM
+            - WAYPOINT_STANDOFF_STEP_MM,
+            f"the final rotation is still too close to the border: {standoff}",
+        )
+        self.assertGreaterEqual(
+            final["y"] - standoff["y"], 150.0,
+            "the final straight leg must be long enough to have turned earlier",
+        )
+        self.assertNotIn("turn", [s["kind"] for s in result["segments"]])
+
     def test_margin_keeps_the_waypoint_proportionally_farther(self):
         """A configured margin is added to the half-body floor."""
         waypoint = {"kind": "waypoint", "x": 2394.0, "y": 652.0,
@@ -1827,6 +1881,73 @@ class CloseWaypointTests(unittest.TestCase):
                 [], 300.0, 300.0, 3000.0, 2000.0,
             ),
             "the final stop leaves the body over the field border",
+        )
+
+    def test_an_arrival_angle_across_the_approach_is_reached_in_reverse(self):
+        """A close waypoint facing away is reached by BACKING onto it.
+
+        Strategy3's second waypoint (2026-11-04): (1175, 475) with a -180 deg
+        arrival, 285 mm from the element. The forward leg along the arrival
+        angle is blocked, and pivoting 95 deg on the point sweeps the body
+        next to the element. The robot must turn to the angle at a turn-safe
+        stand-off on the side it faces and reverse straight onto the point.
+        """
+        blocker = {"kind": "rect", "x": 1450.0, "y": 700.0, "w": 60.0, "h": 600.0}
+        waypoint = {"kind": "waypoint", "x": 1200.0, "y": 1000.0,
+                    "theta_deg": -180.0, "combine": False}
+        result = plan(
+            [waypoint], (900.0, 1600.0, 0.0), None, [blocker],
+            self.options(0.0), 3000.0, 2000.0,
+        )
+        resolved = result["resolved_waypoints"][0]
+        self.assertLess(math.dist(resolved, (1200.0, 1000.0)), 2.0)
+        motion = [s for s in result["segments"]
+                  if s["kind"] in ("goto", "arc", "drive", "turn")]
+        last = motion[-1]
+        self.assertEqual(last["kind"], "drive", result["segments"])
+        self.assertTrue(last.get("arrival_reverse"))
+        self.assertLess(last["distance_mm"], 0.0)
+        self.assertAlmostEqual(last["th"], -180.0, delta=0.5)
+        end = last["points"][-1]
+        self.assertLess(math.dist(end, (1200.0, 1000.0)), 2.0,
+                        "the reverse leg must land exactly on the waypoint")
+        # the motion before the reverse leg ends at the stand-off on the side
+        # the robot faces (an ARC or GOTO, plus the pivot when the connector
+        # was fitted as an arc)
+        standoff = motion[-2]
+        if standoff["kind"] == "turn":
+            standoff = motion[-3]
+        standoff_point = (
+            standoff["x"] if standoff["kind"] == "goto" else standoff["x1"],
+            standoff["y"] if standoff["kind"] == "goto" else standoff["y1"],
+        )
+        self.assertAlmostEqual(standoff_point[1], 1000.0, delta=2.0)
+        self.assertLess(standoff_point[0], 1200.0 - 250.0,
+                        "the stand-off must be on the side the robot faces")
+        self.assertGreater(standoff_point[0], 1200.0 - 400.0,
+                           "the reverse leg must be a real manoeuvre")
+        # the heading the reverse leg is entered with is the arrival angle
+        if standoff["kind"] == "goto":
+            heading = float(standoff["th"])
+        elif standoff["kind"] == "arc":
+            heading = float(standoff["th0_deg"]) + float(standoff["sweep_deg"])
+        else:  # pragma: no cover - a drive before the arrival makes no sense
+            heading = -180.0
+        if motion[-2]["kind"] == "turn":
+            heading += float(motion[-2]["angle_deg"])
+        self.assertAlmostEqual(math.remainder(heading + 180.0, 360.0) - 180.0,
+                               -180.0, delta=0.5,
+                               msg="the body faces the arrival angle before backing")
+        self.assertTrue(
+            any("in REVERSE" in warning for warning in result["warnings"]),
+            result["warnings"],
+        )
+        self.assertTrue(
+            body_clear_at(
+                (end[0], end[1]), -180.0, [blocker],
+                300.0, 300.0, 3000.0, 2000.0,
+            ),
+            "the reverse arrival drives the body into the blocker",
         )
 
     def test_close_waypoint_with_following_motion_backs_up_first(self):
@@ -2235,8 +2356,523 @@ class DynamicObstacleWaitTests(unittest.IsolatedAsyncioTestCase):
             context.wait_deadline_task.cancel()
 
 
+class CloseWaypointDelayReplanTests(unittest.IsolatedAsyncioTestCase):
+    """A camera re-plan during the waypoint DELAY must not stop the robot.
+
+    Live regression (2026-10-23): the opponent reported 1.8 m away, the
+    camera re-plan dropped the close-waypoint reverse departure because the
+    DELAY sat between the waypoint and its signed DRIVE, the re-planned
+    route had to rotate in place on the close waypoint (body corner into the
+    drawn wall) and the run ended with "replanned path still intersects an
+    obstacle's robot-clearance area; the robot remains stopped".
+    """
+
+    SEGMENTS = [
+        {"kind": "goto", "x": 980.0, "y": 858.0, "th": -90.0, "v": 200},
+        {"kind": "goto", "x": 980.0, "y": 653.0, "th": -90.0, "v": 200,
+         "close_waypoint": True},
+        {"kind": "pause", "seconds": 2.0},
+        {"kind": "drive", "distance_mm": -415.0, "v": 150, "departure": True,
+         "points": [[980.0, 653.0], [980.0, 1068.0]]},
+        {"kind": "goto", "x": 1176.4, "y": 913.3, "th": -30.2, "v": 200},
+    ]
+
+    def _context(self, executor):
+        """Mission context of a running close-waypoint program."""
+        elements = [
+            {"kind": "waypoint", "x": 980.0, "y": 653.0, "theta_deg": -90.0,
+             "combine": True},
+            {"kind": "pause", "seconds": 2.0},
+            {"kind": "stroke", "points": [[980.0, 653.0], [1176.4, 913.3]]},
+        ]
+        options = {
+            "speed_mm_s": 200.0, "goto_step_mm": 250.0,
+            "robot_width_mm": 300.0, "robot_height_mm": 300.0,
+            "obstacle_margin_mm": 150.0, "waypoint_margin_mm": 0.0,
+        }
+        wall = {"kind": "rect", "x": 0.0, "y": 0.0, "w": 3000.0, "h": 493.0}
+        far_opponent = {"kind": "rect", "x": 2540.0, "y": 1650.0, "w": 300.0, "h": 300.0}
+        plan_obj = {
+            "path": [[980.0, 653.0], [980.0, 1068.0], [1176.4, 913.3]],
+            "segments": self.SEGMENTS,
+            "stats": {"length_mm": 640.0, "n_segments": 5, "n_gotos": 3,
+                      "n_arcs": 0, "n_actions": 2, "est_s": 4.0},
+            "warnings": [], "resolved_waypoints": [],
+        }
+        logs = []
+
+        async def log(level, message):
+            """Capture the launch log."""
+            logs.append((level, message))
+
+        async def emit(message):
+            """Discard plan broadcasts."""
+
+        context = SimpleNamespace(
+            executor=executor,
+            pose=lambda: (980.0, 653.0, -90.0),
+            last_plan=plan_obj,
+            last_plan_request={
+                "elements": elements, "options": options, "obstacles": [wall],
+                "goal": None, "cursor": 0,
+                "signature": elements_signature(elements),
+            },
+            field={"width_mm": 3000.0, "height_mm": 2000.0},
+            skipped_waypoints=set(),
+            vision=SimpleNamespace(active=lambda: [far_opponent]),
+            opponent_pose=lambda: None,
+            log=log, emit=emit, plan_lock=asyncio.Lock(),
+            vision_waiting=None, wait_deadline_task=None, ladder_band=None,
+        )
+        return context, elements, wall, options
+
+    def _executor(self, index):
+        """A live executor parked on ``index`` of the close-waypoint hold."""
+        class Held(Executor):
+            """Executor double whose state reads as a live run to the re-plan."""
+
+            def is_running(self):
+                """The camera re-plan lands on a RUNNING program."""
+                return True
+
+            @property
+            def state(self):
+                """Same: RUNNING, not aborted/paused."""
+                return EXEC_RUNNING
+
+            async def stop(self, reason=""):
+                """Flag that the run was aborted."""
+                self.stopped = True
+
+            async def wait_idle(self, timeout_s=3.0):
+                """Already stopped."""
+                return True
+
+            async def start(self, segments, deadman_ms=None, paused=False, **kwargs):
+                """Remember that the run was restarted."""
+                self.started = True
+
+        executor = Held(None)
+        executor._segments = [dict(segment) for segment in self.SEGMENTS]
+        executor._index = index
+        executor.stopped = False
+        executor.started = False
+        return executor
+
+    async def test_the_waypoint_delay_is_not_a_stop(self):
+        """A far camera obstacle leaves the delay + reverse untouched."""
+        executor = self._executor(2)  # the 2 s DELAY on the close waypoint
+        context, elements, wall, options = self._context(executor)
+        result = await execute_plan(
+            context, elements, None, [wall], options, 0, quiet_unchanged=True
+        )
+        self.assertTrue(result.get("unchanged"), result)
+        self.assertFalse(executor.stopped, "the robot must keep its mission running")
+        if context.wait_deadline_task is not None:
+            context.wait_deadline_task.cancel()
+
+    async def test_a_blocked_route_still_finishes_the_reverse_first(self):
+        """A genuine re-plan keeps the delay and the reverse ahead of the turn."""
+        executor = self._executor(2)
+        context, elements, wall, options = self._context(executor)
+        # a REAL blockage on the remaining path: the ladder only spends a
+        # candidate plan when the route is physically clipped
+        blocker = {"kind": "rect", "x": 920.0, "y": 900.0, "w": 120.0, "h": 150.0}
+        context.last_plan_request["obstacles"] = [wall, blocker]
+        captured = {}
+
+        async def capture_assessment(
+            ctx, ex, elements_, goal, obstacles, options_, mode, cursor=0,
+            planned_elements=None, check_obstacles=None,
+        ):
+            """Record the elements the re-plan is compared against."""
+            captured["elements"] = planned_elements
+            return (False, None, 1000.0)
+
+        with patch(
+            "software.core.mission.orchestrator._assess_remaining_route",
+            capture_assessment,
+        ):
+            await execute_plan(
+                context, elements, None, [wall, blocker], options, 0, quiet_unchanged=True
+            )
+        planned = captured["elements"]
+        self.assertEqual([entry["kind"] for entry in planned[:2]], ["pause", "drive"])
+        self.assertEqual(planned[1]["distance_mm"], -415.0)
+
+
+class DynamicSafetyBubbleTests(unittest.TestCase):
+    """A moving obstacle is reacted to with a safety margin, not body contact."""
+
+    def test_dynamic_pad_moves_the_clip_before_the_obstacle(self):
+        """The safety pad makes the ladder see the obstacle earlier."""
+        options = PlanOptions(robot_width_mm=300.0, robot_height_mm=300.0,
+                              obstacle_margin_mm=150.0)
+        path = [(500.0, 500.0), (1500.0, 500.0)]
+        obstacle = {"kind": "rect", "x": 1000.0, "y": 400.0, "w": 200.0, "h": 200.0}
+        base, _ = clip_gap_mm(path, [obstacle], options.__dict__, 3000.0, 2000.0)
+        padded, _ = clip_gap_mm(
+            path, [obstacle], options.__dict__, 3000.0, 2000.0,
+            pad_mm=300.0, border_pad_mm=0.0,
+        )
+        self.assertAlmostEqual(base - padded, 300.0, delta=30.0,
+                               msg="the dynamic pad must move the clip 300 mm earlier")
+
+    def test_dynamic_pad_does_not_shrink_the_field_border(self):
+        """Only obstacles are padded; the play area is unchanged."""
+        points = [(500.0, 150.0), (1000.0, 150.0)]
+        self.assertIsNone(
+            first_body_clip(points, [], 300.0, 300.0, 3000.0, 2000.0,
+                            pad_mm=300.0, border_pad_mm=0.0),
+            "the field border must not grow with the obstacle safety pad",
+        )
+        self.assertIsNotNone(
+            first_body_clip(points, [], 300.0, 300.0, 3000.0, 2000.0, pad_mm=300.0),
+            "the default border pad still applies when requested",
+        )
+
+
+class TrailingDynamicObstacleTests(unittest.TestCase):
+    """A moving obstacle BEHIND the robot must not interrupt its route."""
+
+    def test_the_travel_direction_follows_the_remaining_route(self):
+        """The direction comes from the route ahead, not the body heading."""
+        # the body still faces east, but the departure drives WEST
+        self.assertEqual(
+            travel_direction([[1000.0, 500.0], [700.0, 500.0]], (1000.0, 500.0), 0.0),
+            (-1.0, 0.0),
+            "a reverse departure must make 'behind' the body mean 'ahead'",
+        )
+        # the route starts a little behind the robot (projection lag): the
+        # direction is still the route's, not the stale body heading
+        direction = travel_direction(
+            [[900.0, 500.0], [1200.0, 500.0]], (1000.0, 500.0), 180.0
+        )
+        self.assertIsNotNone(direction)
+        self.assertAlmostEqual(direction[0], 1.0)
+        self.assertAlmostEqual(direction[1], 0.0)
+
+    def test_obstacles_entirely_behind_are_ignored(self):
+        """Rect, circle and polygon trailing the robot count as behind."""
+        pose = (1000.0, 500.0)
+        east = (1.0, 0.0)
+        self.assertTrue(obstacle_behind_robot(
+            {"kind": "rect", "x": 550.0, "y": 420.0, "w": 120.0, "h": 160.0}, pose, east
+        ))
+        self.assertTrue(obstacle_behind_robot(
+            {"kind": "circle", "x": 800.0, "y": 500.0, "r": 100.0}, pose, east
+        ))
+        self.assertTrue(obstacle_behind_robot(
+            {"kind": "polygon", "points": [[600.0, 400.0], [700.0, 400.0], [650.0, 600.0]]},
+            pose, east,
+        ))
+
+    def test_obstacles_beside_or_ahead_are_kept(self):
+        """A side/forward opponent still drives the safety bubble."""
+        pose = (1000.0, 500.0)
+        east = (1.0, 0.0)
+        self.assertFalse(obstacle_behind_robot(
+            {"kind": "rect", "x": 900.0, "y": 700.0, "w": 200.0, "h": 200.0}, pose, east
+        ))
+        self.assertFalse(obstacle_behind_robot(
+            {"kind": "circle", "x": 1250.0, "y": 500.0, "r": 100.0}, pose, east
+        ))
+        # no direction (no path/heading): never assume "behind"
+        self.assertFalse(obstacle_behind_robot(
+            {"kind": "circle", "x": 800.0, "y": 500.0, "r": 100.0}, pose, None
+        ))
+
+
+class ReplanCostAndDrawingTests(unittest.IsolatedAsyncioTestCase):
+    """Re-plans must stay fast and must never rewrite the drawn mission.
+
+    Live incident 2026-10-27: a moving obstacle near the route pinned the
+    robot in a stop -> assess -> re-plan -> restart -> stop loop (the planner
+    ran back to back), and every remainder plan stamped its few
+    ``resolved_waypoints`` onto the FIRST waypoints of the full drawing, so
+    the mission slowly turned into duplicated checkpoints and the route
+    looped back over its own tail ("generated garbage").
+    """
+
+    ELEMENTS = [
+        {"kind": "waypoint", "x": 100.0, "y": 300.0},
+        {"kind": "stroke", "points": [[100.0, 300.0], [400.0, 300.0]]},
+        {"kind": "waypoint", "x": 500.0, "y": 300.0},
+        {"kind": "pause", "seconds": 1.0},
+        {"kind": "stroke", "points": [[500.0, 300.0], [800.0, 300.0]]},
+        {"kind": "waypoint", "x": 900.0, "y": 300.0},
+        {"kind": "pause", "seconds": 1.0},
+        {"kind": "stroke", "points": [[600.0, 300.0], [1200.0, 300.0]]},
+        {"kind": "waypoint", "x": 1300.0, "y": 300.0},
+        {"kind": "pause", "seconds": 1.0},
+    ]
+
+    @staticmethod
+    def _context(executor, elements, path, pose, vision=(), cursor=0):
+        """Mission context of a running program."""
+        options = {
+            "speed_mm_s": 200.0, "goto_step_mm": 250.0,
+            "robot_width_mm": 300.0, "robot_height_mm": 300.0,
+            "obstacle_margin_mm": 150.0, "waypoint_margin_mm": 0.0,
+        }
+        logs = []
+
+        async def log(level, message):
+            """Capture console lines."""
+            logs.append((level, message))
+
+        async def emit(message):
+            """Discard plan broadcasts."""
+
+        context = SimpleNamespace(
+            executor=executor,
+            pose=lambda: pose,
+            last_plan={
+                "path": path, "segments": [], "warnings": [],
+                "resolved_waypoints": [], "stats": {},
+            },
+            last_plan_request={
+                "elements": elements, "options": options, "obstacles": [],
+                "goal": None, "cursor": cursor,
+                "signature": elements_signature(elements),
+            },
+            field={"width_mm": 3000.0, "height_mm": 2000.0},
+            skipped_waypoints=set(),
+            vision=SimpleNamespace(active=lambda: list(vision)),
+            opponent_pose=lambda: None,
+            log=log, emit=emit, plan_lock=asyncio.Lock(),
+            vision_waiting=None, wait_deadline_task=None, ladder_band=None,
+        )
+        return context, options, logs
+
+    def _executor(self):
+        """A live executor double."""
+        class Runner:
+            state = EXEC_RUNNING
+            speed_scale = 1.0
+            last_stream = False
+            stopped = 0
+            started = 0
+
+            def is_running(self):
+                """The camera re-plan lands on a RUNNING program."""
+                return True
+
+            def remaining_departure_mm(self, position):
+                """No close-waypoint departure here."""
+                return 0.0
+
+            def remaining_elements(self, position=None):
+                """Unused by these scenarios."""
+                return []
+
+            async def stop(self, reason=""):
+                """Count stops."""
+                self.stopped += 1
+
+            async def wait_idle(self):
+                """Already idle."""
+                return True
+
+            async def start(self, segments, deadman_ms=None, paused=False, **kwargs):
+                """Count restarts."""
+                self.started += 1
+                self.state = EXEC_RUNNING
+
+            @property
+            def progress(self):
+                """Executor progress snapshot."""
+                return {"message": ""}
+
+        return Runner()
+
+    async def test_the_assessment_plan_is_reused_instead_of_replanning(self):
+        """One planner run per re-plan: the assessment IS the plan."""
+        executor = self._executor()
+        obstacle = {"kind": "rect", "x": 850.0, "y": 250.0, "w": 100.0, "h": 100.0}
+        context, options, _ = self._context(
+            executor, self.ELEMENTS,
+            [[650.0, 300.0], [1200.0, 300.0]], (650.0, 300.0, 0.0),
+        )
+        context.last_plan_request["obstacles"] = [obstacle]
+        candidate = {
+            "path": [[650.0, 300.0], [650.0, 600.0], [1200.0, 600.0], [1200.0, 300.0]],
+            "segments": [{"kind": "goto", "x": 1200.0, "y": 300.0}],
+            "stats": {"length_mm": 900.0, "n_segments": 1, "n_gotos": 1,
+                      "n_arcs": 0, "n_actions": 0, "est_s": 4.0},
+            "warnings": [],
+            # the tail plan only knows ONE waypoint (D), the drawing has four
+            "resolved_waypoints": [[999.0, 999.0]],
+        }
+
+        async def assessment(*args, **kwargs):
+            """Report the route as affected, with a ready candidate."""
+            return (True, candidate, 600.0)
+
+        async def must_not_plan(**kwargs):
+            """The candidate must be reused - a second plan is the bug."""
+            raise AssertionError("the remainder was planned twice")
+
+        with patch(
+            "software.core.mission.orchestrator._assess_remaining_route", assessment,
+        ), patch(
+            "software.core.mission.orchestrator._plan_off_loop", must_not_plan,
+        ):
+            result = await execute_plan(
+                context, self.ELEMENTS, None, [obstacle], options, 0,
+                quiet_unchanged=True,
+            )
+
+        self.assertIs(result, candidate)
+        self.assertEqual(executor.started, 1)
+        # the remainder's single waypoint must NOT be stamped onto waypoint A
+        self.assertEqual(context.last_plan_request["elements"][0]["x"], 100.0)
+        self.assertEqual(context.last_plan_request["elements"][0]["y"], 300.0)
+        self.assertEqual(context.last_plan_request["elements"][8]["x"], 1300.0)
+
+    async def test_a_table_fixture_cannot_move_while_the_mission_runs(self):
+        """Permanent obstacles are locked for the whole run."""
+        executor = self._executor()
+        elements = [{"kind": "stroke", "points": [[200.0, 900.0], [800.0, 900.0]]}]
+        context, options, _ = self._context(
+            executor, elements, [[200.0, 900.0], [800.0, 900.0]],
+            (200.0, 900.0, 0.0),
+        )
+        wall = {"kind": "rect", "x": 300.0, "y": 700.0, "w": 100.0, "h": 100.0}
+        context.last_plan_request["permanent_obstacles"] = [dict(wall)]
+        moved = {**wall, "x": 500.0}
+        with self.assertRaisesRegex(ValueError, "permanent obstacles are locked"):
+            await execute_plan(context, elements, None, [moved], options, 0)
+
+    async def test_a_replan_may_drive_through_the_erased_spot(self):
+        """The safety net must not treat a piece erased earlier as solid.
+
+        The remainder starts before the erase and legitimately crosses A's
+        old spot afterwards. The state map still lists A, so the final clip
+        check used to reject the candidate ("replanned path still intersects
+        an obstacle's robot-clearance area") and left the robot stopped after
+        every erase. Only obstacles that cannot change with the mission's own
+        actions may be checked there.
+        """
+        executor = self._executor()
+        element = {
+            "kind": "rect", "x": 900.0, "y": 850.0, "w": 200.0, "h": 200.0,
+            "type": "game_element", "name": "A",
+        }
+        elements = [
+            {"kind": "stroke", "points": [[400.0, 1000.0], [1200.0, 1000.0]]},
+            {"kind": "erase", "name": "A"},
+            {"kind": "stroke", "points": [[1200.0, 1000.0], [2600.0, 1000.0]]},
+        ]
+        moving = {"kind": "rect", "x": 1150.0, "y": 900.0, "w": 300.0, "h": 300.0}
+        context, options, _ = self._context(
+            executor, elements,
+            [[400.0, 1000.0], [1200.0, 1000.0], [2600.0, 1000.0]],
+            (700.0, 1000.0, 0.0), vision=[moving],
+        )
+        context.last_plan_request["obstacles"] = [element]
+        candidate = {
+            # crosses A's old spot at (900, 1000) AFTER the erase action,
+            # while it stays clear of the moving obstacle
+            "path": [[700.0, 1000.0], [900.0, 1000.0], [900.0, 600.0],
+                     [2600.0, 600.0], [2600.0, 1000.0]],
+            "segments": [{"kind": "goto", "x": 2600.0, "y": 1000.0}],
+            "stats": {"length_mm": 2200.0, "n_segments": 1, "n_gotos": 1,
+                      "n_arcs": 0, "n_actions": 1, "est_s": 11.0},
+            "warnings": [], "resolved_waypoints": [],
+        }
+
+        async def assessment(*args, **kwargs):
+            """The moving obstacle affects the route; this is the candidate."""
+            return (True, candidate, 350.0)
+
+        with patch(
+            "software.core.mission.orchestrator._assess_remaining_route", assessment,
+        ):
+            result = await execute_plan(
+                context, elements, None, [element], options, 0, quiet_unchanged=True,
+            )
+
+        self.assertIs(result, candidate)
+        self.assertEqual(executor.started, 1)
+
+    async def test_the_ladder_ignores_the_element_the_remainder_erases(self):
+        """A future leg through A's old spot must not trigger a re-plan storm.
+
+        Live incident 2026-10-30: every 75 mm of progress the ladder
+        re-planned the remainder because the flat path BEYOND the erase
+        action crosses A's old spot while the state map still lists A -
+        dozens of stops before the robot even reached the element. The
+        planner already routed each leg on the map valid at that point, so
+        the phase-dependent piece must not drive the ladder.
+        """
+        executor = self._executor()
+        element = {
+            "kind": "rect", "x": 900.0, "y": 850.0, "w": 200.0, "h": 200.0,
+            "type": "game_element", "name": "A",
+        }
+        elements = [
+            {"kind": "stroke", "points": [[400.0, 1000.0], [700.0, 1000.0]]},
+            {"kind": "erase", "name": "A"},
+            {"kind": "stroke", "points": [[700.0, 1000.0], [1200.0, 1000.0]]},
+        ]
+        # the leg after the erase drives straight through A's old spot
+        path = [[400.0, 1000.0], [600.0, 1000.0], [700.0, 1000.0], [1200.0, 1000.0]]
+        context, options, _ = self._context(
+            executor, elements, path, (600.0, 1000.0, 0.0)
+        )
+        context.last_plan_request["obstacles"] = [element]
+
+        async def must_not_assess(*args, **kwargs):
+            """The erased element is not a blockage - no candidate plan."""
+            raise AssertionError("the ladder treated the erased element as solid")
+
+        with patch(
+            "software.core.mission.orchestrator._assess_remaining_route",
+            must_not_assess,
+        ):
+            result = await execute_plan(
+                context, elements, None, [element], options, 0,
+                quiet_unchanged=True,
+            )
+
+        self.assertTrue(result.get("unchanged"))
+        self.assertEqual(executor.stopped, 0, "the robot must not stop for it")
+        self.assertEqual(executor.started, 0, "the run must not be re-planned")
+
+    async def test_a_bubble_that_already_contains_the_robot_does_not_stop_it(self):
+        """A parked obstacle beside the route must not pin the robot."""
+        executor = self._executor()
+        elements = [{"kind": "stroke", "points": [[200.0, 200.0], [800.0, 200.0]]}]
+        # the padded bubble overlaps the route, the BODY does not
+        opponent = {"kind": "rect", "x": 400.0, "y": 430.0, "w": 200.0, "h": 200.0}
+        context, options, logs = self._context(
+            executor, elements, [[200.0, 200.0], [800.0, 200.0]],
+            (200.0, 200.0, 0.0), vision=[opponent],
+        )
+
+        async def must_not_assess(*args, **kwargs):
+            """No clip on the body route -> no candidate plan at all."""
+            raise AssertionError("the ladder planned with no body clip")
+
+        with patch(
+            "software.core.mission.orchestrator._assess_remaining_route",
+            must_not_assess,
+        ):
+            result = await execute_plan(
+                context, elements, None, [], options, 0, quiet_unchanged=True,
+            )
+
+        self.assertTrue(result.get("unchanged"))
+        self.assertEqual(executor.stopped, 0, "the robot must keep driving")
+        self.assertTrue(
+            any("already inside" in message for _level, message in logs),
+            "the console should say why it drove clear",
+        )
+
+
 class StartWaypointTests(unittest.TestCase):
-    """The first waypoint is usually the robot's own start pose."""
+    """The first waypoint is usually the robot's own start pose.""" 
 
     def test_waypoint_at_the_start_is_not_a_zero_length_stop(self):
         options = PlanOptions(robot_width_mm=300.0, robot_height_mm=300.0)
@@ -2461,6 +3097,69 @@ class MissionCursorTests(unittest.TestCase):
         self.assertEqual([entry["kind"] for entry in remainder], ["pause", "waypoint", "stroke"])
         self.assertEqual(remainder[1]["x"], 700.0)
         self.assertEqual(remainder[1]["theta_deg"], -90.0)
+
+    def test_actions_before_a_running_stroke_are_not_replayed(self):
+        """A re-plan mid-stroke must not replay the pause/reverse/turn before it.
+
+        Real-robot incident 2026-10-27 (Game1): after the second waypoint the
+        robot drove pause -> reverse -> turn -> stroke, and a camera re-plan
+        halfway down that stroke rebuilt the remainder from the PAUSE. The
+        robot backed up again, turned and drove a hairpin back to the stroke.
+        """
+        elements = [
+            {"kind": "waypoint", "x": 500.0, "y": 500.0, "theta_deg": 0.0},
+            {"kind": "pause", "seconds": 2.0},
+            {"kind": "drive", "distance_mm": -150.0},
+            {"kind": "rotate", "angle_deg": 90.0},
+            stroke([[500.0, 500.0], [1500.0, 500.0]]),
+            {"kind": "waypoint", "x": 1600.0, "y": 500.0},
+        ]
+        # the robot reached the waypoint and is halfway down the stroke
+        driven = [(300.0, 500.0), (500.0, 500.0), (900.0, 500.0)]
+        self.assertEqual(advance_cursor(elements, 0, driven), 4)
+        remainder = replan_route_elements(elements, 4, (900.0, 500.0), 0.5)
+        self.assertEqual([entry["kind"] for entry in remainder], ["stroke", "waypoint"])
+        self.assertLess(math.dist(remainder[0]["points"][0], (900.0, 500.0)), 10.0,
+                        "the continuation starts at the robot, not at the stroke's first point")
+        self.assertGreaterEqual(min(point[0] for point in remainder[0]["points"]), 894.0,
+                                "nothing behind the robot may be re-driven")
+
+    def test_actions_stay_pending_while_the_robot_has_not_entered_the_stroke(self):
+        """Standing on the waypoint/stroke start is not "the stroke started"."""
+        elements = [
+            {"kind": "waypoint", "x": 500.0, "y": 500.0, "theta_deg": 0.0},
+            {"kind": "pause", "seconds": 2.0},
+            {"kind": "drive", "distance_mm": -150.0},
+            {"kind": "rotate", "angle_deg": 90.0},
+            stroke([[500.0, 500.0], [1500.0, 500.0]]),
+        ]
+        # right ON the shared waypoint/stroke start: the actions still own it
+        self.assertEqual(advance_cursor(elements, 0, [(300.0, 500.0), (500.0, 500.0)]), 1)
+        # a few mm into the stroke is not enough to declare the actions done
+        self.assertEqual(advance_cursor(elements, 0, [(300.0, 500.0), (510.0, 500.0)]), 1)
+        # clearly driving the stroke: the actions are behind the robot
+        self.assertEqual(advance_cursor(elements, 0, [(300.0, 500.0), (560.0, 500.0)]), 4)
+
+    def test_a_returning_route_does_not_complete_the_final_waypoint_early(self):
+        """A route that returns to its own start must not skip the final waypoint.
+
+        Strategy3 rehearsal 2026-11-04: the last waypoint (248, 998) stands
+        2 mm from the mission start (250, 1000). The driven polyline STARTS
+        there, and the old "within 80 mm of any driven sample" test marked it
+        visited right after the first waypoint. The remainder collapsed to
+        nothing, the fallback rebuilt the tail without the waypoint's arrival
+        angle, and the robot finished at 103 deg instead of the commanded 0.
+        """
+        elements = [
+            {"kind": "waypoint", "x": 1300.0, "y": 1500.0, "theta_deg": 0.0},
+            {"kind": "waypoint", "x": 248.0, "y": 998.0, "theta_deg": 0.0},
+        ]
+        outward = [(250.0, 1000.0), (1300.0, 1500.0), (600.0, 1300.0)]
+        self.assertEqual(advance_cursor(elements, 0, outward), 1)
+        returning = outward + [(350.0, 1080.0)]
+        self.assertEqual(advance_cursor(elements, 0, returning), 1)
+        home = returning + [(260.0, 1005.0)]
+        self.assertEqual(advance_cursor(elements, 0, home), 2)
 
     def test_skipped_waypoint_counts_as_done_and_is_dropped(self):
         """A checkpoint given up after a bounded wait never becomes a target again."""
@@ -2719,6 +3418,83 @@ class ArcJunctionRoundingTests(unittest.TestCase):
         for prev, nxt in zip(arcs, arcs[1:]):
             gap = abs(g.deg_norm180(nxt["th0_deg"] - (prev["th0_deg"] + prev["sweep_deg"])))
             self.assertLessEqual(gap, 0.2, "every arc must be entered on its tangent")
+
+    def test_tight_corridor_junction_is_rounded_by_body_clearance(self):
+        """A near-straight ARC joins a curve without an in-place pivot.
+
+        Real plan (2026-10-22): the route runs through the narrow corridor
+        next to an obstacle at body clearance, so the connector that rounds
+        the R = 28643 mm -> R = 415 mm junction sits inside the configured
+        obstacle MARGIN. The routing-grid gate rejected it and the robot
+        "danced" (in-place TURN) between the two arcs. The exact rotated body
+        is clear, so the connector must be accepted; the straight that follows
+        the curve must also be joined tangentially.
+        """
+        elements = [
+            {"kind": "waypoint", "x": 1104, "y": 151, "theta_deg": -90,
+             "combine": True, "speed_mm_s": 350},
+            {"kind": "pause", "seconds": 2},
+            {"kind": "waypoint", "x": 1920, "y": 151, "theta_deg": -90, "combine": True},
+            {"kind": "pause", "seconds": 2},
+            {"kind": "waypoint", "x": 1390, "y": 1850, "theta_deg": 90,
+             "combine": True, "speed_mm_s": 200},
+        ]
+        obstacles = [
+            {"kind": "rect", "x": 1404.4, "y": 702.5, "w": 182.5, "h": 196.9},
+            {"kind": "rect", "x": 702.8, "y": 706.1, "w": 186.1, "h": 186.1},
+            {"kind": "rect", "x": 2123.8, "y": 709.6, "w": 157.5, "h": 175.4},
+            {"kind": "rect", "x": 1436.6, "y": 0.0, "w": 143.2, "h": 115.5},
+            {"kind": "rect", "x": 620.5, "y": 0.0, "w": 157.5, "h": 119.1},
+            {"kind": "rect", "x": 2224.0, "y": 0.0, "w": 153.9, "h": 111.9},
+        ]
+        options = PlanOptions(
+            speed_mm_s=200.0, goto_step_mm=250.0, corner_radius_mm=200.0,
+            node_chord_tol_mm=6.0, fit_tol_mm=8.0,
+            robot_width_mm=300.0, robot_height_mm=300.0,
+            obstacle_margin_mm=150.0, waypoint_margin_mm=0.0,
+        )
+        result = plan(elements, (315.0, 1800.0, -90.0), None, obstacles, options, 3000.0, 2000.0)
+        segments = result["segments"]
+        flat_index = next(
+            index for index, segment in enumerate(segments)
+            if segment["kind"] == "arc" and abs(segment["radius_mm"]) > 20000.0
+        )
+        curve_index = next(
+            index for index, segment in enumerate(segments)
+            if index > flat_index
+            and segment["kind"] == "arc"
+            and 300.0 < abs(segment["radius_mm"]) < 600.0
+        )
+        between = segments[flat_index + 1 : curve_index]
+        self.assertTrue(
+            all(segment["kind"] == "arc" for segment in between),
+            f"a tangent connector must join the two arcs, got {between}",
+        )
+        chain = [segments[flat_index], *between, segments[curve_index]]
+        for prev, nxt in zip(chain, chain[1:]):
+            gap = abs(g.deg_norm180(nxt["th0_deg"] - (prev["th0_deg"] + prev["sweep_deg"])))
+            self.assertLessEqual(gap, 0.2, "the whole junction chain must stay tangent")
+        # the curve must also flow into the straight that follows it (the
+        # straight is merged into ONE GOTO, which has no entry tangent)
+        exit_index = curve_index
+        exit_deg = segments[exit_index]["th0_deg"] + segments[exit_index]["sweep_deg"]
+        while exit_index + 1 < len(segments) and segments[exit_index + 1]["kind"] == "arc":
+            nxt = segments[exit_index + 1]
+            gap = abs(g.deg_norm180(nxt["th0_deg"] - exit_deg))
+            self.assertLessEqual(gap, 0.2, "the exit connector must stay tangent")
+            exit_index += 1
+            exit_deg = nxt["th0_deg"] + nxt["sweep_deg"]
+        following = segments[exit_index + 1]
+        self.assertEqual(following["kind"], "goto")
+        last = segments[exit_index]
+        line_deg = math.degrees(math.atan2(
+            following["y"] - last["y1"],
+            following["x"] - last["x1"],
+        ))
+        self.assertLessEqual(
+            abs(g.deg_norm180(line_deg - exit_deg)), 1.0,
+            "the curve must exit tangent to the following straight",
+        )
 
 
 class NearStraightArcTests(unittest.TestCase):
@@ -3072,6 +3848,501 @@ class ChainAnchorWireTests(unittest.TestCase):
             ),
             0.06,
             "the next ARC must start where the previous one lands",
+        )
+
+
+class TurnMarginTests(unittest.TestCase):
+    """A planned turn only happens with the body's turning circle + margin."""
+
+    #: the reported case: the robot waits in its start box, hugging the border
+    BORDER_START = (150.0, 1000.0, 0.0)
+    BORDER_MARGIN = 30.0
+
+    def _elements(self):
+        """Top-left waypoint, pause, top-right waypoint (the reported plan)."""
+        return [
+            {"kind": "waypoint", "x": 804.0, "y": 151.0, "theta_deg": -90.0},
+            {"kind": "pause", "seconds": 2},
+            {"kind": "waypoint", "x": 1812.0, "y": 1850.0, "theta_deg": 90.0},
+        ]
+
+    def _options(self, margin=None):
+        margin = self.BORDER_MARGIN if margin is None else margin
+        return PlanOptions(
+            robot_width_mm=300.0,
+            robot_height_mm=300.0,
+            waypoint_margin_mm=0,
+            turn_margin_mm=margin,
+        )
+
+    def _plan(self, margin=None, start=None):
+        return plan(
+            self._elements(),
+            start or self.BORDER_START,
+            None,
+            [],
+            self._options(margin),
+            3000.0,
+            2000.0,
+        )
+
+    def test_the_first_turn_is_preceded_by_a_straight_move(self):
+        """Starting against the border: drive forward before turning."""
+        options = self._options()
+        result = self._plan()
+        first = result["segments"][0]
+        self.assertEqual(first["kind"], "drive")
+        self.assertGreater(first["distance_mm"], 0.0, "the start move must go FORWARD")
+        target = tuple(first["points"][-1])
+        self.assertGreaterEqual(
+            point_clearance(target, [], 3000.0, 2000.0),
+            turn_clearance(options) - 1e-6,
+            "the straight start move must end where a full turn fits",
+        )
+        self.assertFalse(
+            any("path start inside" in warning for warning in result["warnings"]),
+            "the plan must start where the robot really is, not at a shifted point",
+        )
+        self.assertTrue(
+            any("starts too close to the border" in warning for warning in result["warnings"]),
+            "the operator must be told why the plan starts with a straight move",
+        )
+
+    def test_no_start_move_when_the_robot_already_fits(self):
+        """In open field the mission still starts with the route itself."""
+        result = self._plan(start=(1500.0, 1000.0, 0.0))
+        self.assertNotEqual(result["segments"][0]["kind"], "drive")
+
+    def test_a_stroke_drawn_from_the_robot_is_joined_from_the_escape(self):
+        """No out-and-back: the drawing starts where the escape left the robot."""
+        # the reported case: the path starts AT the robot and runs right
+        points = [
+            [150.0, 1000.0], [400.0, 1010.0], [700.0, 1060.0],
+            [1000.0, 900.0], [1300.0, 620.0], [1600.0, 520.0],
+        ]
+        result = plan(
+            [{"kind": "stroke", "points": points}],
+            self.BORDER_START, None, [], self._options(), 3000.0, 2000.0,
+        )
+        segments = result["segments"]
+        self.assertEqual(segments[0]["kind"], "drive")
+        self.assertGreater(segments[0]["distance_mm"], 0.0)
+        escape_x = float(segments[0]["points"][-1][0])
+        # every later point stays ahead of the escape point: no leg drives back
+        # to the pose the drawing started from
+        for segment in segments[1:]:
+            for point in segment.get("points") or []:
+                self.assertGreaterEqual(
+                    float(point[0]), escape_x - 2.0,
+                    "the plan drives back behind the start escape",
+                )
+
+    def test_close_waypoint_departure_keeps_the_turn_margin(self):
+        """The reverse that leaves a close stop ends where turning is safe."""
+        options = self._options()
+        result = self._plan()
+        after_pause = [s for s in result["segments"][1:] if s["kind"] == "drive"]
+        self.assertTrue(after_pause, "a close waypoint needs a departure move")
+        for departure in after_pause:
+            target = tuple(departure["points"][-1])
+            self.assertGreaterEqual(
+                point_clearance(target, [], 3000.0, 2000.0),
+                turn_clearance(options) - 1e-6,
+                "every departure must end with the full turn clearance",
+            )
+
+    def test_a_larger_turn_margin_lengthens_the_departures(self):
+        """The configurable margin goes straight into the move lengths."""
+        short = self._plan(margin=0.0)
+        long = self._plan(margin=120.0)
+
+        def lengths(result):
+            return [abs(s["distance_mm"]) for s in result["segments"] if s["kind"] == "drive"]
+
+        self.assertEqual(len(lengths(short)), len(lengths(long)))
+        self.assertGreater(
+            sum(lengths(long)), sum(lengths(short)),
+            "a larger turn clearance must produce longer straight moves",
+        )
+
+
+class SmoothLaunchTests(unittest.TestCase):
+    """The mission opens with a straight + ONE arc, never an in-place turn."""
+
+    #: a drawing well ahead of the robot, so the opening is a real turn
+    STROKE = [
+        {"kind": "stroke", "points": [[1500.0, 1400.0], [1700.0, 1500.0],
+                                      [1900.0, 1400.0], [2000.0, 1000.0]]}
+    ]
+
+    def _options(self, smooth=True):
+        return PlanOptions(
+            speed_mm_s=200.0,
+            robot_width_mm=300.0,
+            robot_height_mm=300.0,
+            waypoint_margin_mm=0,
+            smooth_launch=smooth,
+        )
+
+    def _plan(self, start, smooth=True):
+        return plan(self.STROKE, start, None, [], self._options(smooth), 3000.0, 2000.0)
+
+    def _motion(self, result):
+        """The program without the non-moving steps."""
+        return [s for s in result["segments"] if s["kind"] != "pause"]
+
+    def test_the_launch_is_a_curve_not_a_pivot(self):
+        """A turn at the start is driven as an arc from the current heading."""
+        result = self._plan((1000.0, 1000.0, 0.0))
+        first = self._motion(result)[0]
+        self.assertEqual(first["kind"], "arc", "the launch must curve, not pivot")
+        self.assertAlmostEqual(float(first["th0_deg"]), 0.0, delta=1.0)
+        self.assertAlmostEqual(float(first["x0"]), 1000.0, delta=1.0)
+        self.assertAlmostEqual(float(first["y0"]), 1000.0, delta=1.0)
+        self.assertTrue(
+            any("no stop at the start" in warning for warning in result["warnings"]),
+            "the operator must be told the launch curves",
+        )
+        self.assertFalse(
+            any(s["kind"] == "turn" and not s.get("explicit") for s in result["segments"]),
+            "an opening pivot means the launch did not become a curve",
+        )
+
+    def test_the_arc_exits_on_the_heading_the_route_leaves_the_node(self):
+        """Continuity: the node must not need a corrective turn."""
+        result = self._plan((1000.0, 1000.0, 0.0))
+        segments = self._motion(result)
+        arc = next(s for s in segments if s.get("launch_fillet"))
+        exit_heading = float(arc["th0_deg"]) + float(arc["sweep_deg"])
+        node = next(s for s in segments if s["kind"] == "goto")
+        self.assertLess(
+            abs(g.deg_norm180(float(node["th"]) - exit_heading)), 5.0,
+            "the launch arc must hand the robot over on the route's heading",
+        )
+
+    def test_a_short_straight_precedes_the_curve_when_that_is_cheaper(self):
+        """'short forward then curves': the straight is the current heading."""
+        result = self._plan((1000.0, 1000.0, 90.0))
+        first = self._motion(result)[0]
+        self.assertEqual(first["kind"], "goto")
+        self.assertAlmostEqual(float(first["th"]), 90.0, delta=1.0)
+        second = self._motion(result)[1]
+        self.assertEqual(second["kind"], "arc")
+        self.assertTrue(second.get("launch_fillet"))
+
+    def test_the_opening_never_becomes_a_long_detour(self):
+        """A curve that costs more than the pivot budget keeps the pivot."""
+        start = (1000.0, 1000.0, 90.0)
+        smooth = self._plan(start)
+        pivot = self._plan(start, smooth=False)
+        extra = smooth["stats"]["length_mm"] - pivot["stats"]["length_mm"]
+        self.assertLess(extra, 650.0, "the smooth launch must stay a launch")
+
+    def test_option_restores_the_pivot(self):
+        """smooth_launch=False keeps the old stop-and-turn opening."""
+        result = self._plan((1000.0, 1000.0, 0.0), smooth=False)
+        first = self._motion(result)[0]
+        self.assertEqual(first["kind"], "goto")
+        self.assertNotEqual(
+            round(float(first.get("th", 0.0)), 1), 0.0,
+            "the old opening faces the node in place",
+        )
+        self.assertFalse(
+            any("no stop at the start" in warning for warning in result["warnings"])
+        )
+
+    def test_the_collinear_route_nodes_are_folded_into_one_target(self):
+        """A 250 mm route node cannot be joined tangentially: skip to the bend."""
+        result = plan(
+            [{"kind": "stroke", "points": [[2000.0, 1900.0], [2300.0, 1850.0],
+                                           [2500.0, 1750.0]]}],
+            (1085.3, 1503.8, -34.45), None, [], self._options(), 3000.0, 2000.0,
+        )
+        segments = self._motion(result)
+        self.assertEqual(segments[0]["kind"], "arc", "the launch must curve")
+        self.assertTrue(segments[0].get("launch_fillet"))
+        leg = math.dist(
+            (float(segments[0]["x1"]), float(segments[0]["y1"])),
+            (float(segments[1]["x"]), float(segments[1]["y"])),
+        )
+        self.assertGreater(
+            leg, 250.0,
+            "the launch hands over to a real leg, not the first filler node",
+        )
+
+    def test_the_launch_prefers_a_drivable_radius(self):
+        """A comfortable arc beats a shorter spin at the minimum radius."""
+        result = self._plan((1000.0, 1000.0, 0.0))
+        arc = next(s for s in self._motion(result) if s.get("launch_fillet"))
+        options = self._options()
+        self.assertGreaterEqual(
+            abs(float(arc["radius_mm"])),
+            0.5 * options.corner_radius_mm - 1e-6,
+            "a tight spin is what the pivot already was",
+        )
+
+    def test_a_stroke_drawn_backwards_is_not_rejoined_behind_the_escape(self):
+        """The join point must lie AHEAD of the start escape, not behind it.
+
+        The drawing starts on the robot and runs south-east first: projecting
+        the escape end onto that leg lands BEHIND the escaped pose, and the
+        plan drove back and hooked onto the drawing (the reported "non-sense
+        first movements"). The join now moves further along the drawing.
+        """
+        stroke = [
+            [150.0, 1000.0], [248.0, 937.0], [281.0, 945.0], [350.0, 962.0],
+            [500.0, 973.0], [700.0, 940.0], [900.0, 900.0],
+        ]
+        result = plan(
+            [{"kind": "stroke", "points": stroke}],
+            (150.0, 1000.0, 0.0), None, [], self._options(), 3000.0, 2000.0,
+        )
+        segments = self._motion(result)
+        self.assertEqual(segments[0]["kind"], "drive")
+        escape_x = float(segments[0]["points"][-1][0])
+        # the path starts on the pose and then on the escape end: everything
+        # AFTER it must stay ahead of the pose the escape left
+        tail = result["path"][2:]
+        self.assertTrue(tail)
+        self.assertGreaterEqual(
+            min(float(p[0]) for p in tail), escape_x - 2.0,
+            "the plan drives back behind the start escape",
+        )
+        # ... and the first leg after it is not a hook: it heads FORWARD
+        first_target = next(s for s in segments[1:] if s["kind"] == "goto")
+        self.assertGreater(float(first_target["x"]), escape_x)
+        self.assertLessEqual(
+            abs(g.deg_norm180(float(first_target.get("th", 0.0)))),
+            15.0,
+            "the join must not need a big in-place turn right after the escape",
+        )
+
+
+class GameElementPlanningTests(unittest.TestCase):
+    """Erase/spawn actions change the routing grid for the legs after them."""
+
+    def _options(self):
+        """Options shared by the phase-aware scenarios."""
+        return PlanOptions(
+            speed_mm_s=200.0, robot_width_mm=300.0, robot_height_mm=300.0,
+            obstacle_margin_mm=50.0, waypoint_margin_mm=0.0,
+        )
+
+    def test_a_game_element_blocks_until_it_is_erased(self):
+        """The same straight line detours around A, then ignores it after erase."""
+        element = {
+            "kind": "rect", "x": 1400.0, "y": 900.0, "w": 200.0, "h": 200.0,
+            "type": "game_element", "name": "A",
+        }
+        stroke = {"kind": "stroke", "points": [[400.0, 1000.0], [2600.0, 1000.0]]}
+        options = self._options()
+        blocked = plan([stroke], (400.0, 1000.0, 0.0), None, [element], options, 3000.0, 2000.0)
+        self.assertGreater(blocked["stats"]["length_mm"], 2300.0)
+        self.assertFalse(
+            _clips_obstacle(blocked["path"], [element], options, 3000.0, 2000.0)
+        )
+        erased = plan(
+            [{"kind": "erase", "name": "A"}, stroke],
+            (400.0, 1000.0, 0.0), None, [element], options, 3000.0, 2000.0,
+        )
+        self.assertEqual(erased["segments"][0]["kind"], "game_element")
+        self.assertEqual(erased["segments"][0]["action"], "erase")
+        self.assertAlmostEqual(erased["stats"]["length_mm"], 2200.0, delta=5.0)
+        self.assertTrue(
+            _clips_obstacle(erased["path"], [element], options, 3000.0, 2000.0),
+            "after the erase the robot is allowed to drive through A's old spot",
+        )
+
+    def test_a_spawn_adds_the_obstacle_for_the_following_legs(self):
+        """A spawn placed mid-mission routes the tail around its geometry."""
+        first = {"kind": "stroke", "points": [[400.0, 1000.0], [1200.0, 1000.0]]}
+        second = {"kind": "stroke", "points": [[1200.0, 1000.0], [2600.0, 1000.0]]}
+        spawn_geometry = {"kind": "rect", "x": 1700.0, "y": 900.0, "w": 200.0, "h": 200.0}
+        spawn = {"kind": "spawn", "name": "A", "obstacle": spawn_geometry}
+        options = self._options()
+        result = plan(
+            [first, spawn, second], (400.0, 1000.0, 0.0), None, [], options, 3000.0, 2000.0,
+        )
+        actions = [segment for segment in result["segments"] if segment["kind"] == "game_element"]
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0]["action"], "spawn")
+        self.assertEqual(actions[0]["name"], "A")
+        self.assertEqual(actions[0]["obstacle"]["x"], 1700.0)
+        self.assertGreater(result["stats"]["length_mm"], 2300.0)
+        self.assertFalse(
+            _clips_obstacle(result["path"], [spawn_geometry], options, 3000.0, 2000.0),
+            "the legs after the spawn must stay clear of the placed element",
+        )
+
+    def test_a_spawn_in_front_of_the_robot_backs_up_before_turning(self):
+        """The robot releases the piece in front of itself, then must escape.
+
+        Live incident 2026-10-30: after the robot re-placed the game element,
+        the next leg rotated in place to face its route and swept the body
+        over the piece it had just put down. A small straight reverse to a
+        turn-safe point must come first.
+        """
+        placed = {
+            "kind": "rect", "x": 795.99, "y": 817.31,
+            "w": 114.52, "h": 364.39,
+        }
+        element = {**placed, "type": "game_element", "name": "E"}
+        spawn = {"kind": "spawn", "name": "E", "obstacle": dict(placed)}
+        waypoint = {
+            "kind": "waypoint", "x": 1751.0, "y": 1835.0,
+            "theta_deg": 90.0, "combine": True,
+        }
+        options = PlanOptions(
+            speed_mm_s=200.0, robot_width_mm=300.0, robot_height_mm=300.0,
+            obstacle_margin_mm=150.0, waypoint_margin_mm=0.0, turn_margin_mm=30.0,
+        )
+        result = plan(
+            [spawn, waypoint], (1115.0, 1005.0, -180.0), None, [element],
+            options, 3000.0, 2000.0,
+        )
+        segments = result["segments"]
+        spawn_index = next(
+            index for index, segment in enumerate(segments)
+            if segment["kind"] == "game_element"
+        )
+        escape = segments[spawn_index + 1]
+        self.assertEqual(escape["kind"], "drive", "the escape must be a straight move")
+        self.assertLess(
+            float(escape["distance_mm"]), 0.0,
+            "the piece stands in front of the robot: back up",
+        )
+        end = tuple(float(value) for value in escape["points"][-1])
+        self.assertGreater(end[0], 1115.0, "the reverse must move AWAY from the piece")
+        clearance = point_clearance(end, [element], 3000.0, 2000.0)
+        self.assertGreaterEqual(
+            clearance, turn_clearance(options) - 0.5,
+            "the escape must end where the body can rotate in place",
+        )
+        self.assertFalse(
+            _clips_obstacle(
+                result["path"][1:], [element], options, 3000.0, 2000.0
+            ),
+            "the route after the escape must clear the placed element",
+        )
+
+    def test_a_moved_game_element_is_still_checked(self):
+        """Only the geometry the current route was planned on is exempt.
+
+        The phase-aware exemption must fail safe: a piece the operator moved
+        while the mission runs is a NEW blockage, and an unknown planning map
+        means nothing may be ignored.
+        """
+        original = {
+            "kind": "rect", "x": 900.0, "y": 850.0, "w": 200.0, "h": 200.0,
+            "type": "game_element", "name": "A",
+        }
+        moved = {**original, "x": 600.0}
+        elements = [{"kind": "erase", "name": "A"}]
+        self.assertEqual(
+            route_check_obstacles([original], elements, [original]), [],
+            "unchanged since planning: the remainder erases it",
+        )
+        self.assertEqual(
+            route_check_obstacles([moved], elements, [original]), [moved],
+            "moved mid-run: the ladder must see it",
+        )
+        self.assertEqual(
+            route_check_obstacles([original], elements, None), [original],
+            "without a planning map the piece stays checked",
+        )
+
+    def test_a_piece_spawned_before_the_cursor_is_not_a_blockage(self):
+        """The WHOLE mission is passed: an executed spawn stays phase-dependent.
+
+        The robot releases a game element next to itself, so the remainder
+        path starts with its body overlapping the piece. Treating it as a new
+        blockage stopped the robot right after the spawn and re-planned an
+        extra arc (strategy3, 2026-11-04).
+        """
+        piece = {
+            "kind": "rect", "x": 700.0, "y": 1350.0, "w": 200.0, "h": 200.0,
+            "type": "game_element", "name": "B",
+        }
+        mission = [
+            {"kind": "spawn", "name": "B", "obstacle": {
+                "kind": "rect", "x": 700.0, "y": 1350.0, "w": 200.0, "h": 200.0,
+            }},
+            {"kind": "pause", "seconds": 2.0},
+            {"kind": "waypoint", "x": 248.0, "y": 998.0},
+        ]
+        self.assertEqual(
+            route_check_obstacles([piece], mission, [piece]), [],
+            "the spawn is behind the cursor: the ladder must ignore the piece",
+        )
+        # the remainder alone does not name it any more - the caller passes
+        # the mission on purpose (fail safe: only unknown pieces are checked)
+        self.assertEqual(route_check_obstacles([piece], mission[1:], [piece]), [piece])
+
+    def test_a_programmable_spawn_does_not_move_the_element_early(self):
+        """The destination is known up front; the piece still starts WHERE IT IS.
+
+        This is the console's programmable spawn: the operator draws the
+        destination BEFORE the run, so the map keeps A at its initial place.
+        The first leg must route around A there, and the destination may only
+        shape the legs after the spawn action (never the earlier ones).
+        """
+        element = {
+            "kind": "rect", "x": 900.0, "y": 850.0, "w": 200.0, "h": 200.0,
+            "type": "game_element", "name": "A",
+        }
+        first = {"kind": "stroke", "points": [[400.0, 1000.0], [1200.0, 1000.0]]}
+        second = {"kind": "stroke", "points": [[1200.0, 1000.0], [2600.0, 1000.0]]}
+        destination = {"kind": "rect", "x": 1700.0, "y": 900.0, "w": 200.0, "h": 200.0}
+        options = self._options()
+        result = plan(
+            [
+                first,
+                {"kind": "erase", "name": "A"},
+                {"kind": "spawn", "name": "A", "obstacle": destination},
+                second,
+            ],
+            (400.0, 1000.0, 0.0), None, [element], options, 3000.0, 2000.0,
+        )
+        segments = result["segments"]
+        actions = [
+            (index, segment) for index, segment in enumerate(segments)
+            if segment["kind"] == "game_element"
+        ]
+        self.assertEqual(
+            [(segment["action"], segment["name"]) for _, segment in actions],
+            [("erase", "A"), ("spawn", "A")],
+        )
+        erase_index, spawn_index = actions[0][0], actions[1][0]
+        self.assertLess(erase_index, spawn_index)
+
+        def motion_points(part):
+            """GOTO/ARC geometry of one segment slice (the planned route)."""
+            collected = []
+            for segment in part:
+                if segment["kind"] == "goto":
+                    collected.append((segment["x"], segment["y"]))
+                elif segment["kind"] == "arc":
+                    collected.extend(
+                        tuple(point) for point in segment.get("points") or []
+                    )
+            return collected
+
+        before = motion_points(segments[:erase_index])
+        after = motion_points(segments[spawn_index + 1:])
+        self.assertGreaterEqual(len(before), 2)
+        self.assertGreaterEqual(len(after), 2)
+        self.assertFalse(
+            _clips_obstacle(before, [element], options, 3000.0, 2000.0),
+            "the legs before the erase must avoid A where it INITIALLY stands",
+        )
+        self.assertFalse(
+            _clips_obstacle(after, [destination], options, 3000.0, 2000.0),
+            "the legs after the spawn must clear the destination",
+        )
+        # the action payload is the destination, not the initial marker
+        self.assertEqual(
+            (actions[1][1]["obstacle"]["x"], actions[1][1]["obstacle"]["y"]),
+            (1700.0, 900.0),
         )
 
 

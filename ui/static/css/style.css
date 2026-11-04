@@ -160,6 +160,168 @@ header::after {
 .pill.off { color: #a1243d; background: rgba(205, 43, 76, .10); border-color: rgba(205, 43, 76, .30); }
 .pill.warn { color: #8a5a06; background: rgba(200, 121, 10, .14); border-color: rgba(200, 121, 10, .32); }
 .pill.hidden { display: none; }
+/* task timer: a stopwatch + the time - the plan's duration before a run, the
+   live clock during it, the final time after. Indigo while it runs, slate
+   when it idles: never the "all good" green of the status pills. */
+.pill.timer {
+  min-width: 104px; gap: 7px; padding: 0 12px 0 9px;
+  text-transform: none; letter-spacing: .3px; font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted); background: var(--panel-2); border-color: var(--line);
+  transition: color .18s ease, background .18s ease, border-color .18s ease,
+              box-shadow .18s ease;
+}
+.pill.timer .timer-icon {
+  width: 15px; height: 15px; flex: 0 0 auto;
+  fill: none; stroke: currentColor; stroke-width: 1.7;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+.pill.timer .timer-icon circle {
+  transform-box: view-box; transform-origin: 12px 13.6px;
+}
+#task-timer-value { font-weight: 800; }
+.pill.timer.estimate {
+  color: #4f46c8;
+  background: linear-gradient(180deg, rgba(99, 91, 255, .13), rgba(99, 91, 255, .05));
+  border-color: rgba(99, 91, 255, .30);
+}
+.pill.timer.running {
+  color: #4438d0;
+  background: linear-gradient(180deg, rgba(99, 91, 255, .22), rgba(99, 91, 255, .07));
+  border-color: rgba(99, 91, 255, .44);
+  box-shadow: 0 0 0 3px rgba(99, 91, 255, .12);
+  animation: timer-halo 1.9s ease-in-out infinite;
+}
+.pill.timer.running .timer-icon circle {
+  stroke-dasharray: 7 41;
+  animation: timer-tick 1.15s linear infinite;
+}
+.pill.timer.done {
+  color: #46536a; background: rgba(100, 116, 139, .12);
+  border-color: rgba(100, 116, 139, .28);
+}
+.pill.timer.paused {
+  color: #9a6700; background: rgba(245, 158, 11, .14);
+  border-color: rgba(245, 158, 11, .38);
+}
+:root[data-theme="dark"] .pill.timer {
+  color: var(--muted); background: var(--panel-2); border-color: var(--line);
+}
+:root[data-theme="dark"] .pill.timer.estimate {
+  color: #bab6ff;
+  background: linear-gradient(180deg, rgba(124, 116, 255, .18), rgba(124, 116, 255, .07));
+  border-color: rgba(124, 116, 255, .38);
+}
+:root[data-theme="dark"] .pill.timer.running {
+  color: #cfccff;
+  background: linear-gradient(180deg, rgba(124, 116, 255, .26), rgba(124, 116, 255, .10));
+  border-color: rgba(140, 132, 255, .52);
+  box-shadow: 0 0 0 3px rgba(124, 116, 255, .14);
+}
+:root[data-theme="dark"] .pill.timer.done {
+  color: #aab6c9; background: rgba(148, 163, 184, .14);
+  border-color: rgba(148, 163, 184, .28);
+}
+:root[data-theme="dark"] .pill.timer.paused {
+  color: #fcd34d; background: rgba(245, 158, 11, .18);
+  border-color: rgba(245, 158, 11, .44);
+}
+/* game clock: countdown from the match duration. Normal = slate, warning
+   window = amber, limit = red. MOCK overtime keeps the red pill plus the
+   warning mark (a REAL run is stopped at the limit). */
+.pill.game-timer {
+  min-width: 96px; gap: 7px; padding: 0 10px 0 9px;
+  text-transform: none; letter-spacing: .3px; font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted); background: var(--panel-2); border-color: var(--line);
+  /* No colour transition: the red warning/limit state must be visible
+     immediately, including in background/headless tabs where transitions
+     can be throttled. */
+}
+.pill.game-timer .timer-icon {
+  width: 15px; height: 15px; flex: 0 0 auto;
+  fill: none; stroke: currentColor; stroke-width: 1.7;
+  stroke-linecap: round; stroke-linejoin: round;
+}
+#game-timer-value { font-weight: 800; }
+.pill.game-timer.running {
+  color: #0f766e; background: rgba(13, 148, 136, .13);
+  border-color: rgba(13, 148, 136, .34);
+}
+.pill.game-timer.paused {
+  color: #9a6700; background: rgba(245, 158, 11, .14);
+  border-color: rgba(245, 158, 11, .38);
+}
+.pill.game-timer.warning {
+  color: #b91c1c; background: rgba(220, 38, 38, .12);
+  border-color: rgba(220, 38, 38, .38);
+}
+.pill.game-timer.expired {
+  color: #fff; background: rgba(185, 28, 28, .90);
+  border-color: rgba(185, 28, 28, 1);
+}
+.pill.game-timer .game-warn {
+  display: none; width: 15px; height: 15px; flex: 0 0 auto;
+  align-items: center; justify-content: center;
+  border-radius: 50%; font-size: 11px; font-weight: 900;
+  color: #fff; background: rgba(0, 0, 0, .28);
+}
+.pill.game-timer.mock-over .game-warn { display: inline-flex; }
+:root[data-theme="dark"] .pill.game-timer {
+  color: var(--muted); background: var(--panel-2); border-color: var(--line);
+}
+:root[data-theme="dark"] .pill.game-timer.running {
+  color: #99f6e4; background: rgba(13, 148, 136, .24);
+  border-color: rgba(45, 212, 191, .44);
+}
+:root[data-theme="dark"] .pill.game-timer.paused {
+  color: #fcd34d; background: rgba(245, 158, 11, .18);
+  border-color: rgba(245, 158, 11, .44);
+}
+:root[data-theme="dark"] .pill.game-timer.warning {
+  color: #fecaca; background: rgba(220, 38, 38, .24);
+  border-color: rgba(248, 113, 113, .52);
+}
+:root[data-theme="dark"] .pill.game-timer.expired {
+  color: #fff; background: rgba(220, 38, 38, .88);
+  border-color: rgba(248, 113, 113, .90);
+}
+/* timed actions in the Game tab */
+.game-clock-actions { gap: 6px; }
+.game-clock-actions .m-btn { flex: 1 1 0; }
+.game-action-list { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+.game-action-list:empty { display: none; }
+.game-action-row {
+  display: flex; align-items: flex-end; gap: 6px; padding: 7px 8px;
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: 9px;
+}
+.game-action-row label { display: flex; flex-direction: column; gap: 3px;
+  font-size: 10px; color: var(--muted); }
+.game-action-row input[type="number"] { width: 74px; }
+.game-action-row input[type="text"] { min-width: 90px; flex: 1 1 auto; }
+.game-action-row select { min-width: 86px; }
+.game-action-row .game-action-params { flex: 1 1 auto; min-width: 90px; }
+.game-action-row .game-action-del {
+  flex: 0 0 auto; padding: 3px; width: 24px; height: 24px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.game-action-row .game-action-del svg {
+  width: 12px; height: 12px; fill: none; stroke: currentColor;
+  stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+}
+.game-action-row .game-action-del:hover { color: var(--danger); border-color: var(--danger); }
+.game-action-row .check { flex: 0 0 auto; flex-direction: row; align-items: center; }
+@keyframes timer-halo {
+  0%, 100% { box-shadow: 0 0 0 3px rgba(99, 91, 255, .10); }
+  50% { box-shadow: 0 0 0 5px rgba(99, 91, 255, .17); }
+}
+@keyframes timer-tick {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pill.timer.running, .pill.timer.running .timer-icon circle { animation: none; }
+}
 .pill.icon { width: 34px; padding: 0; }
 .pill.icon svg {
   width: 16px; height: 16px; fill: none; stroke: currentColor;
@@ -383,7 +545,52 @@ body.resizing-panel * { cursor: col-resize !important; }
   background: var(--key);
   box-shadow: var(--shadow-sm), inset 0 -2px 0 var(--accent);
 }
-.tab-page.hidden { display: none; }
+/* MAP Configuration (settings rail): background picker, zone list, colours */
+select {
+  background: var(--surface); color: var(--text); border: 1px solid var(--line);
+  border-radius: 7px; padding: 5px 7px; font: inherit;
+  transition: border-color .12s, box-shadow .12s;
+}
+select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.field-col .field select { flex: 1 1 auto; width: 100%; min-width: 0; }
+.map-bg-actions { gap: 8px; }
+.map-bg-actions .m-btn { flex: 1 1 0; }
+.zone-tools { grid-template-columns: repeat(2, 1fr); }
+.zone-list { display: flex; flex-direction: column; gap: 6px; margin-top: 8px; }
+.zone-list:empty { display: none; }
+.zone-row {
+  display: flex; align-items: center; gap: 8px; padding: 6px 8px;
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: 9px;
+  cursor: pointer; transition: border-color .12s, background .12s;
+}
+.zone-row:hover { border-color: var(--accent); background: var(--key, var(--surface)); }
+.zone-swatch { flex: 0 0 auto; width: 12px; height: 12px; border-radius: 3px; border: 1px solid rgba(0, 0, 0, .25); }
+.zone-row .zone-text { flex: 1 1 auto; min-width: 0; font-size: 12px; color: var(--text); }
+.zone-row .zone-sub { display: block; color: var(--muted); font-size: 10.5px; }
+.zone-row .zone-del {
+  flex: 0 0 auto; padding: 3px; width: 24px; height: 24px;
+  display: inline-flex; align-items: center; justify-content: center;
+}
+.zone-row .zone-del svg {
+  width: 12px; height: 12px; fill: none; stroke: currentColor;
+  stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+}
+.zone-row .zone-del:hover { color: var(--danger); border-color: var(--danger); }
+.zone-popup { min-width: 224px; border-color: var(--accent); }
+.zone-popup .pp-row label[for="zone-team"], .zone-popup .pp-row label[for="zone-type"],
+.zone-popup .pp-row label[for="zone-spawn-th"],
+.wp-popup .pp-row label[for="wp-th"] { width: auto; }
+.zone-popup .pp-row select { width: 104px; }
+.zone-popup .pp-head.pp-sub {
+  margin: 9px 0 2px; color: var(--muted); letter-spacing: .6px; font-size: 10px;
+}
+.zone-popup .pp-head.pp-sub span { text-transform: none; letter-spacing: 0; }
+.zone-popup #zone-spawn-fields.hidden { display: none; }
+.zone-popup .zone-centre {
+  width: 100%; margin-top: 4px; padding: 4px 6px; font-size: 11px;
+}
+.zone-popup .pp-actions #zone-delete, .zone-popup .pp-actions #zone-cancel { flex: 0 0 40px; }
+.zone-popup .pp-actions #zone-delete.hidden { display: none; }
 .calib-subtabs {
   display: flex; gap: 4px; margin: 0 0 10px; padding: 3px;
   background: var(--panel-2); border: 1px solid var(--line); border-radius: 9px;
@@ -548,6 +755,7 @@ label.file-row input[type="file"]::file-selector-button {
   background: var(--surface); border: 1px solid var(--line); border-radius: 8px;
 }
 .robots-list .robot-row label { gap: 5px; }
+.robots-list .robot-row input[type="number"] { width: 60px; }
 .robot-tag { min-width: 26px; font-weight: 700; color: var(--warn); }
 
 /* Config > Display: colour name on the left, swatch + hex value on the right */
@@ -566,6 +774,27 @@ label.color-row:last-of-type { border-bottom: 0; }
   font-variant-numeric: tabular-nums;
 }
 .color-pick:hover .color-hex { color: var(--accent-2); }
+
+/* UI tab > Map colours: layer transparency sliders */
+label.opacity-row {
+  display: flex; justify-content: space-between; align-items: center;
+  gap: 10px; margin: 5px 0; padding: 3px 0;
+  border-bottom: 1px dashed var(--line);
+}
+label.opacity-row:last-of-type { border-bottom: 0; }
+.opacity-pick {
+  flex: 0 0 auto; display: inline-flex; align-items: center; gap: 8px; margin-left: auto;
+}
+.opacity-pick input[type="range"] {
+  width: 112px; height: 18px; margin: 0; cursor: pointer; accent-color: var(--accent);
+  background: transparent;
+}
+.opacity-val {
+  min-width: 40px; text-align: right; font-family: Consolas, "Cascadia Mono", monospace;
+  font-size: 11px; letter-spacing: .3px; color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.opacity-pick:hover .opacity-val { color: var(--accent-2); }
 
 /* UI tab > Appearance: one raised key per theme */
 .theme-seg {
@@ -706,6 +935,27 @@ label.color-row:last-of-type { border-bottom: 0; }
 .goal-popup { min-width: 200px; }
 .goal-popup .pp-row label[for="goal-th"] { width: auto; }
 .goal-popup .pp-actions #goal-delete, .goal-popup .pp-actions #goal-cancel { flex: 0 0 40px; }
+/* obstacle editor: coordinates for a box / zone, one X/Y pair per vertex */
+.obstacle-popup { min-width: 236px; }
+.obstacle-popup #obstacle-rect-fields.hidden,
+.obstacle-popup #obstacle-circle-fields.hidden,
+.obstacle-popup #obstacle-poly-fields.hidden { display: none; }
+.obstacle-popup .pp-actions #obstacle-delete,
+.obstacle-popup .pp-actions #obstacle-close { flex: 0 0 40px; }
+.obstacle-popup .pp-sub { margin-top: 8px; }
+.obstacle-points { max-height: 152px; overflow-y: auto; }
+.obstacle-points .obstacle-point { gap: 4px; }
+.obstacle-points .obstacle-point label { width: 16px; text-align: right; }
+.obstacle-points .obstacle-point input { width: 64px; }
+.obstacle-point-del {
+  flex: 0 0 24px; width: 24px; height: 24px; padding: 0; display: inline-flex;
+  align-items: center; justify-content: center;
+}
+.obstacle-point-del svg {
+  width: 13px; height: 13px; fill: none; stroke: currentColor;
+  stroke-width: 1.8; stroke-linecap: round;
+}
+.obstacle-point-del:disabled { opacity: .35; cursor: not-allowed; }
 .strat-check { margin-top: 7px; }
 .strat-actions { gap: 8px; }
 .strat-actions .m-btn { flex: 1 1 0; }
@@ -1097,6 +1347,14 @@ select.bit-select:has(option[value="1"]:checked) { border-color: var(--warn); co
 .seq-field .field .unit { flex: 0 0 auto; min-width: 24px; color: var(--muted); font-size: 12px; }
 .seq-actions { gap: 6px; }
 .seq-actions .m-btn { flex: 1; }
+/* game-element actions: pick the named piece, then erase or spawn it */
+.seq-elements { gap: 6px; }
+.seq-elements select {
+  flex: 1 1 90px; min-width: 80px; padding: 5px 6px;
+  border: 1px solid var(--line-2); border-radius: 8px;
+  background: var(--panel-2); color: var(--text); font: inherit;
+}
+.seq-elements .m-btn { flex: 0 0 auto; padding: 0 8px; font-size: 11px; }
 
 /* mission: categorized groups with small captions and icon buttons */
 .m-group { margin-top: 10px; }
@@ -1114,6 +1372,18 @@ select.bit-select:has(option[value="1"]:checked) { border-color: var(--warn); co
 }
 .m-btn.wide { width: 100%; }
 .grid2 .span2 { grid-column: 1 / -1; }
+/* Redo while a run is PAUSED: it rewinds the interrupted node, so it is lit
+   with the same indigo as the running task clock (never the "go" green) */
+#btn-replay.redo-armed {
+  color: #4438d0; border-color: rgba(99, 91, 255, .45);
+  background: rgba(99, 91, 255, .10);
+}
+#btn-replay.redo-armed:hover { background: rgba(99, 91, 255, .16); }
+:root[data-theme="dark"] #btn-replay.redo-armed {
+  color: #cfccff; border-color: rgba(140, 132, 255, .50);
+  background: rgba(124, 116, 255, .16);
+}
+:root[data-theme="dark"] #btn-replay.redo-armed:hover { background: rgba(124, 116, 255, .24); }
 
 /* Inline confirmation (release motors): a small UI card below the trigger -
    no native window.confirm dialog. It is moved next to whichever release

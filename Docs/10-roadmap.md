@@ -92,7 +92,7 @@ Levers (one at a time!):
 | `corner_radius_mm` | 200 | smoother fillets, larger waypoint cut |
 | `line_pair_mm` | 700 | longer flat S pairs (fewer segment boundaries) |
 | `CHAIN_REANCHOR_MM` | 900 (constant in `trajectory.py`) | fewer absolute re-anchors (fewer stops) but more accumulated slip before correction |
-| `speed_mm_s` / `lat_accel_mm_s2` | 500 / 300 | overall pace on curves |
+| `speed_mm_s` / `lat_accel_mm_s2` | 350 / 300 | overall pace on curves |
 
 Procedure (field session):
 

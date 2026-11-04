@@ -26,6 +26,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from ..world.obstacles import normalize_obstacles, validate_actions
+
 #: Document format version - bump when the schema changes in a breaking way.
 #: v2 adds the optional behavior-tree layer (``kind`` + ``tree``): v1
 #: documents (elements only) load unchanged - ``kind`` defaults to
@@ -76,6 +78,11 @@ class Strategy:
     kind: str = KIND_ELEMENTS
     #: behavior-tree spec of a "bt" document (parsed by core.mission.bt)
     tree: Optional[Dict[str, Any]] = None
+
+    def __post_init__(self) -> None:
+        """Normalise the obstacle model as soon as a document is built."""
+        self.obstacles = normalize_obstacles(self.obstacles)
+        validate_actions(self.elements, self.obstacles)
 
     # ------------------------------------------------------------- document
     def to_dict(self) -> Dict[str, Any]:
@@ -136,6 +143,10 @@ class Strategy:
     # ------------------------------------------------------------- storage
     def save(self, directory: Path | str) -> Path:
         """Write ``<directory>/<name>.json`` (creates the directory)."""
+        # reject an unpalayable document at SAVE time: a permanent obstacle
+        # cannot be an erase/spawn target, game-element names are unique, ...
+        self.obstacles = normalize_obstacles(self.obstacles)
+        validate_actions(self.elements, self.obstacles)
         folder = Path(directory)
         folder.mkdir(parents=True, exist_ok=True)
         self.updated_at = time.time()

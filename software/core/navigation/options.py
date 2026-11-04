@@ -19,7 +19,7 @@ from typing import Dict, Optional
 class PlanOptions:
     """Per-request planning knobs (UI exposes these)."""
 
-    speed_mm_s: float = 500.0
+    speed_mm_s: float = 350.0
     turn_speed_mm_s: float = 150.0
     accel_mm_s2: float = 700.0
     decel_mm_s2: float = 700.0
@@ -73,6 +73,17 @@ class PlanOptions:
     # waypoints are swept smoothly: the corner fillet stays within this
     # distance of the exact waypoint (0 = knife-point exact crossing)
     waypoint_cut_mm: float = 50.0
+    # extra room demanded around a point where the robot turns in place
+    # (half-diagonal + this). It lengthens the straight move that leaves a
+    # close stop and the one that precedes the FIRST turn of a mission, so a
+    # few millimetres of localisation error can never sweep a body corner
+    # into the border or an obstacle.
+    turn_margin_mm: float = 30.0
+    # the launch is a CURVE, never an in-place turn: when the first node of
+    # the mission lies beside or behind the robot, a straight along the
+    # current heading plus one arc replaces the stop-and-turn opening. Off
+    # restores the pivot (the shortest route, but the robot stops to rotate).
+    smooth_launch: bool = True
     # mid-mission re-plan (dynamic obstacle): the elements are the TAIL of a
     # running program - the connector from the stop position is expected, so
     # the "first path starts away from the robot" warning is not raised

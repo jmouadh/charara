@@ -34,10 +34,13 @@ from .interfaces import MissionContext
 
 _log = logging.getLogger(__name__)
 
-REPLAN_DEBOUNCE_S = 0.25
+REPLAN_DEBOUNCE_S = 0.15
 # the proximity watchdog re-checks while driving: an obstacle that was too far
-# to matter can become close as the robot advances (no new camera message)
-PROXIMITY_PERIOD_S = 0.5
+# to matter can become close as the robot advances (no new camera message).
+# 0.2 s (and a 75 mm movement cell below) keeps the dynamic safety bubble
+# ahead of a fast opponent: with a 0.5 s / 150 mm check the gap could jump
+# from "creep" straight into the stop band (2026-10-27).
+PROXIMITY_PERIOD_S = 0.2
 _proximity_signature: Optional[tuple] = None
 # dragging an opponent robot must not flood the console log with one line per
 # camera message: the obstacle preview is logged at most once per second
@@ -51,6 +54,32 @@ async def broadcast_state(ctx: MissionContext, reason: str) -> None:
     data = ctx.vision.status()
     data["reason"] = reason
     await ctx.emit({"type": "vision", "data": data})
+
+
+def _obstacle_signature(obstacle: Dict) -> tuple:
+    """Rounded, hashable shape of one obstacle - polygons included.
+
+    The proximity watchdog only needs "did the nearby obstacles change?": a
+    custom shape has no x/y/w/h, so its vertex list is quantised instead.
+    """
+    kind = str(obstacle.get("kind", "rect"))
+    if kind == "polygon":
+        points = []
+        for point in obstacle.get("points") or []:
+            try:
+                points.append(
+                    (round(float(point[0]) / 50.0), round(float(point[1]) / 50.0))
+                )
+            except (TypeError, ValueError, IndexError):
+                continue
+        return (kind, tuple(points))
+    return (
+        kind,
+        round(float(obstacle.get("x", 0.0)) / 50.0),
+        round(float(obstacle.get("y", 0.0)) / 50.0),
+        round(float(obstacle.get("w", obstacle.get("r", 0.0))) / 50.0),
+        round(float(obstacle.get("h", 0.0)) / 50.0),
+    )
 
 
 def _opponent_cell(pose: Optional[Dict]) -> Optional[tuple]:
@@ -69,12 +98,15 @@ def notify_opponent_change(
 
 
 async def _stop_on_dynamic_contact(ctx: MissionContext) -> bool:
-    """Emergency hold when a moving obstacle is already touching the body.
+    """Emergency hold when a moving obstacle enters the robot's safety bubble.
 
     A dragged/opponent robot can appear ON the robot between two camera
     frames. Stopping normally happens after the reaction planner runs, which
-    is too late: the body is already overlapping. Stop immediately and leave
-    a wait record, so the next camera frame resumes the mission.
+    is too late: the body is already overlapping. Stop immediately (also when
+    the obstacle is merely close, ``DYNAMIC_CONTACT_PAD_MM`` around the body)
+    and leave a wait record, so the next camera frame resumes the mission.
+    An obstacle entirely BEHIND the direction of travel is exempt: the robot
+    drives away from it and stopping would only keep it there.
     """
     executor = ctx.executor
     if executor is None or not executor.is_running():
@@ -83,8 +115,25 @@ async def _stop_on_dynamic_contact(ctx: MissionContext) -> bool:
         return False
     pose = ctx.pose()
     request = ctx.last_plan_request
-    dynamic = ctx.vision.active()
-    if pose is None or request is None or not dynamic:
+    if pose is None or request is None:
+        return False
+    # vision obstacles PLUS a fresh opponent pose (a camera may report only
+    # ArUco poses, not a rectangle)
+    dynamic = mission.active_obstacles(ctx, [], request.get("options") or {})
+    if not dynamic:
+        return False
+    # A trailing obstacle cannot be driven into while the robot continues
+    # forward: ignore anything entirely behind the direction the remaining
+    # route is driving (a following robot used to retrigger this bubble on
+    # every camera frame and freeze the mission).
+    direction = mission.travel_direction(
+        (ctx.last_plan or {}).get("path") or [], (pose[0], pose[1]), pose[2]
+    )
+    dynamic = [
+        obstacle for obstacle in dynamic
+        if not mission.obstacle_behind_robot(obstacle, (pose[0], pose[1]), direction)
+    ]
+    if not dynamic:
         return False
     options = PlanOptions.from_dict(request.get("options") or {})
     width, height = body_geometry(options)
@@ -94,6 +143,7 @@ async def _stop_on_dynamic_contact(ctx: MissionContext) -> bool:
         if not body_clear_at(
             (pose[0], pose[1]), pose[2], [obstacle], width, height,
             field["width_mm"], field["height_mm"],
+            pad_mm=mission.DYNAMIC_CONTACT_PAD_MM, border_pad_mm=0.0,
         )
     ]
     if not touching:
@@ -103,7 +153,7 @@ async def _stop_on_dynamic_contact(ctx: MissionContext) -> bool:
     task = getattr(ctx, "vision_replan_task", None)
     if task is not None and not task.done():
         task.cancel()
-    await executor.stop(reason="moving obstacle touching the robot")
+    await executor.stop(reason="waiting for the moving obstacle - too close to the robot")
     await executor.wait_idle()
     mission.begin_moving_obstacle_wait(
         ctx,
@@ -113,12 +163,12 @@ async def _stop_on_dynamic_contact(ctx: MissionContext) -> bool:
         options=request.get("options") or {},
         deadman_ms=request.get("deadman_ms"),
         paused=False,
-        reason="the moving obstacle is touching the robot",
+        reason="the moving obstacle is too close to the robot",
     )
     await ctx.log(
         "warn",
-        "the moving obstacle is touching the robot - stopped immediately; "
-        "it resumes by itself when the obstacle moves away",
+        "the moving obstacle is inside the robot's safety bubble - stopped "
+        "immediately; it resumes by itself when the obstacle moves away",
     )
     return True
 
@@ -143,24 +193,27 @@ async def notify_change(ctx: MissionContext, reason: str) -> None:
 
 
 # -------------------------------------------------------------- re-plan ----
-def schedule_replan(ctx: MissionContext, *, quiet: bool = False) -> None:
-    """Coalesced mid-run re-plan: one at a time, 0.25 s after the change.
+def schedule_replan(ctx: MissionContext, *, quiet: bool = False) -> bool:
+    """Coalesced mid-run re-plan: one at a time, 0.15 s after the change.
 
     While the robot waits for a moving obstacle to clear the run is STOPPED
     (not running), so the same slot schedules the RESUME attempt instead.
     ``quiet`` (the proximity watchdog) suppresses the "trajectory unchanged"
-    log - driving beside an irrelevant robot stays silent.
+    log - driving beside an irrelevant robot stays silent. Returns True when a
+    task was actually queued; a proximity check that could not be scheduled
+    must be retried on the next watchdog pass (2026-10-27).
     """
     task = ctx.vision_replan_task
     if task is not None and not task.done():
-        return  # a re-plan is already queued; it will pick up the newest state
+        return False  # a re-plan is already queued; it will pick up the newest state
     if ctx.vision_waiting is not None:
         ctx.vision_replan_task = asyncio.create_task(_resume_soon(ctx))
-        return
+        return True
     executor = ctx.executor
     if executor is None or not executor.is_running() or ctx.last_plan_request is None:
-        return
+        return False
     ctx.vision_replan_task = asyncio.create_task(_replan_soon(ctx, quiet))
+    return True
 
 
 async def _resume_soon(ctx: MissionContext) -> None:
@@ -238,21 +291,16 @@ async def proximity_loop(ctx: MissionContext, period_s: float = PROXIMITY_PERIOD
                 _proximity_signature = None
                 continue
             signature = (
-                int(position[0] // 150.0),
-                int(position[1] // 150.0),
-                tuple(sorted(
-                    (str(o.get("kind", "rect")),
-                     round(float(o.get("x", 0.0)) / 50.0),
-                     round(float(o.get("y", 0.0)) / 50.0),
-                     round(float(o.get("w", o.get("r", 0.0))) / 50.0),
-                     round(float(o.get("h", 0.0)) / 50.0))
-                    for o in near
-                )),
+                int(position[0] // 75.0),
+                int(position[1] // 75.0),
+                tuple(sorted(_obstacle_signature(o) for o in near)),
             )
             if signature == _proximity_signature:
                 continue
-            _proximity_signature = signature
-            schedule_replan(ctx, quiet=True)
+            # consume the signature only when the check was really queued: a
+            # busy re-plan task must not swallow the next movement check
+            if schedule_replan(ctx, quiet=True):
+                _proximity_signature = signature
         except asyncio.CancelledError:
             raise
         except Exception:

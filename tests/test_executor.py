@@ -26,10 +26,13 @@ from software.core.mission.executor import (  # noqa: E402
     EXEC_PAUSED,
     Executor,
     follow_cruise_mm_s,
+    needs_game_element_actions,
+    needs_in_place_actions,
     remaining_elements,
 )
 from software.robot import protocol as robot_protocol  # noqa: E402
 from software.robot.client import RobotClient, RobotError  # noqa: E402
+from software.core.mission.interfaces import RobotIOError  # noqa: E402
 from software.robot.link import LinkError, MockLink  # noqa: E402
 
 
@@ -99,6 +102,93 @@ class ArcChainTests(unittest.IsolatedAsyncioTestCase):
         executor.resume()
         await executor.wait()
         self.assertEqual(executor.state, EXEC_DONE)
+        # RESUME finishes the interrupted node: the run really drove the whole
+        # plan (skipping the node left the robot short of the last exit)
+        final = await self.client.odometry()
+        self.assertAlmostEqual(final.theta_deg, 60.0, delta=2.5)
+
+    async def test_resume_drives_the_rest_of_the_interrupted_arc(self):
+        """The remaining sweep is re-sent, so a paused ARC ends where planned."""
+        executor = Executor(self.client, deadman_ms=0, timeout_slack_s=8.0, poll_s=0.02)
+        segments = [{"kind": "arc", "radius_mm": 400.0, "sweep_deg": 90.0, "v": 120}]
+        await executor.start(segments)
+        for _ in range(400):
+            if (await self.client.odometry()).theta_deg > 25.0:
+                break
+            await asyncio.sleep(0.01)
+        executor.pause()
+        for _ in range(250):
+            if executor.state == EXEC_PAUSED:
+                break
+            await asyncio.sleep(0.02)
+        stopped = (await self.client.odometry()).theta_deg
+        self.assertLess(stopped, 89.0, "the arc must be interrupted before its end")
+        executor.resume()
+        await executor.wait()
+        self.assertEqual(executor.state, EXEC_DONE)
+        final = await self.client.odometry()
+        self.assertAlmostEqual(
+            final.theta_deg, 90.0, delta=2.0,
+            msg="the resumed arc must finish on the planned exit heading",
+        )
+
+    async def test_resume_continues_a_goto_exactly_where_it_stopped(self):
+        """A paused GOTO is re-sent absolute: it finishes the leg, never backs up."""
+        executor = Executor(self.client, deadman_ms=0, timeout_slack_s=8.0, poll_s=0.02)
+        segments = [
+            {"kind": "goto", "x": 600.0, "y": 0.0, "th": 0.0, "v": 150},
+            {"kind": "drive", "distance_mm": 100.0, "v": 200},
+        ]
+        await executor.start(segments)
+        for _ in range(600):
+            if (await self.client.odometry()).x_mm > 250.0:
+                break
+            await asyncio.sleep(0.01)
+        executor.pause()
+        for _ in range(250):
+            if executor.state == EXEC_PAUSED:
+                break
+            await asyncio.sleep(0.02)
+        stopped = (await self.client.odometry()).x_mm
+        self.assertGreater(stopped, 200.0, "the leg must be interrupted mid-way")
+        self.assertLess(stopped, 550.0)
+
+        executor.resume()
+        for _ in range(400):
+            position = (await self.client.odometry()).x_mm
+            self.assertGreaterEqual(
+                position, stopped - 3.0,
+                "resume must never drive BACK towards the previous node",
+            )
+            if position > 650.0:
+                break
+            await asyncio.sleep(0.02)
+        await executor.wait()
+        self.assertEqual(executor.state, EXEC_DONE)
+        final = await self.client.odometry()
+        self.assertAlmostEqual(final.x_mm, 700.0, delta=6.0)
+
+    async def test_a_busy_chain_slot_is_not_hammered(self):
+        """BUSY on the chained-ARC queue is retried a beat later, not per poll."""
+        executor = Executor(self.client, deadman_ms=0, timeout_slack_s=8.0, poll_s=0.02)
+        calls = []
+
+        async def busy(radius, sweep, speed):
+            calls.append(1)
+            error = RobotIOError("busy")
+            error.status = 0x04
+            raise error
+
+        self.client.queue_arc = busy
+        executor._sent_count = 3
+        executor._index = 0
+        segments = [{"kind": "arc", "radius_mm": 300.0, "sweep_deg": 10.0, "v": 150}] * 3
+        await executor._pump_chain(segments, 2)
+        await executor._pump_chain(segments, 2)
+        await executor._pump_chain(segments, 2)
+        self.assertEqual(
+            len(calls), 1, "a BUSY slot must not be re-asked on every poll"
+        )
 
 
 class _ReleaseSpyLink(MockLink):
@@ -572,6 +662,66 @@ class RemainingElementsTests(unittest.TestCase):
         )
 
 
+class RemainingDepartureTests(unittest.TestCase):
+    """The reverse behind a close-waypoint DELAY stays owed to the re-plan.
+
+    Live regression (2026-10-23): a camera re-plan landed while the robot
+    waited the waypoint delay. The departure was reported as "not ahead"
+    (the pause sat between the waypoint and its reverse DRIVE), the tail
+    started with the pause and the stroke, and the re-planned route turned
+    in place on the close waypoint - the body clipped the wall and the run
+    ended "replanned path still intersects ... the robot remains stopped".
+    """
+
+    SEGMENTS = [
+        {"kind": "goto", "x": 980.0, "y": 858.0, "th": -90.0, "v": 200},
+        {"kind": "goto", "x": 980.0, "y": 653.0, "th": -90.0, "v": 200,
+         "close_waypoint": True},
+        {"kind": "pause", "seconds": 2.0},
+        {"kind": "drive", "distance_mm": -415.0, "v": 150, "departure": True,
+         "points": [[980.0, 653.0], [980.0, 1068.0]]},
+        {"kind": "goto", "x": 1176.4, "y": 913.3, "th": -30.2, "v": 200},
+    ]
+
+    def _executor(self, index):
+        """Executor parked on ``index`` with the close-waypoint program."""
+        executor = Executor(None)
+        executor._segments = [dict(segment) for segment in self.SEGMENTS]
+        executor._index = index
+        return executor
+
+    def test_the_final_leg_keeps_its_upcoming_departure(self):
+        """On the last straight leg the whole reverse is still owed."""
+        self.assertEqual(
+            self._executor(1).remaining_departure_mm((980.0, 700.0)), -415.0
+        )
+
+    def test_the_delay_on_the_waypoint_keeps_the_departure(self):
+        """The 2 s stop at the waypoint must not hide the reverse behind it."""
+        executor = self._executor(2)
+        self.assertEqual(executor.remaining_departure_mm((980.0, 653.0)), -415.0)
+        elements = executor.remaining_elements((980.0, 653.0))
+        self.assertEqual([element["kind"] for element in elements[:2]], ["pause", "drive"])
+        self.assertEqual(elements[1]["distance_mm"], -415.0)
+
+    def test_a_half_driven_reverse_reports_only_what_is_left(self):
+        """Mid-reverse the re-plan still has to reach the turn-safe point."""
+        remaining = self._executor(3).remaining_departure_mm((980.0, 800.0))
+        self.assertLess(remaining, -200.0)
+        self.assertGreater(remaining, -300.0)
+
+    def test_a_pause_elsewhere_does_not_claim_a_departure(self):
+        """A delay after a normal waypoint owns no reverse."""
+        executor = Executor(None)
+        executor._segments = [
+            {"kind": "goto", "x": 100.0, "y": 100.0, "th": 0.0, "v": 200},
+            {"kind": "pause", "seconds": 1.0},
+            {"kind": "drive", "distance_mm": -100.0, "v": 150, "departure": True},
+        ]
+        executor._index = 1
+        self.assertEqual(executor.remaining_departure_mm((100.0, 100.0)), 0.0)
+
+
 class CautionScaleTests(unittest.IsolatedAsyncioTestCase):
     """The dynamic-obstacle caution slows the run without re-planning it."""
 
@@ -804,6 +954,54 @@ class FollowModeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(executor.progress.get("message"), "test stop")
         self.assertTrue((await self.client.odometry()).is_idle)
         self.assertIsNone(self.link._stream)
+
+
+class GameElementActionTests(unittest.IsolatedAsyncioTestCase):
+    """Erase/spawn actions run between motion segments, never mid-move."""
+
+    async def asyncSetUp(self):
+        """Fresh mock board parked at the origin."""
+        self.link = MockLink()
+        self.client = RobotClient(self.link, retries=1)
+        await self.client.set_pose(0.0, 0.0, 0.0)
+
+    async def test_the_hook_gets_the_action_between_the_two_gotos(self):
+        """The obstacle map changes after the previous move finished."""
+        seen = []
+
+        async def hook(action):
+            """Record the action and the pose it ran at."""
+            odometry = await self.client.odometry()
+            seen.append((dict(action), odometry.x_mm, odometry.y_mm))
+
+        executor = Executor(self.client, deadman_ms=0, timeout_slack_s=8.0, poll_s=0.02)
+        segments = [
+            {"kind": "goto", "x": 300.0, "y": 0.0, "th": 0.0, "v": 250},
+            {"kind": "game_element", "action": "erase", "name": "A"},
+            {"kind": "goto", "x": 600.0, "y": 0.0, "th": 0.0, "v": 250},
+        ]
+        self.assertTrue(needs_game_element_actions(segments))
+        self.assertTrue(needs_in_place_actions(segments))
+        await executor.start(segments, game_element_hook=hook)
+        await executor.wait()
+        self.assertEqual(executor.state, EXEC_DONE, executor.progress)
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(seen[0][0]["action"], "erase")
+        self.assertEqual(seen[0][0]["name"], "A")
+        self.assertAlmostEqual(seen[0][1], 300.0, delta=5.0)
+        self.assertAlmostEqual((await self.client.odometry()).x_mm, 600.0, delta=5.0)
+
+    async def test_a_missing_handler_aborts_instead_of_skipping_the_action(self):
+        """Silently dropping an obstacle change would drive on a stale map."""
+        executor = Executor(self.client, deadman_ms=0, timeout_slack_s=8.0, poll_s=0.02)
+        segments = [
+            {"kind": "game_element", "action": "spawn", "name": "A",
+             "obstacle": {"kind": "rect", "x": 500.0, "y": 500.0, "w": 100.0, "h": 100.0}},
+        ]
+        await executor.start(segments)
+        await executor.wait()
+        self.assertEqual(executor.state, EXEC_ABORTED)
+        self.assertIn("no obstacle handler", str(executor.progress.get("message")))
 
 
 if __name__ == "__main__":

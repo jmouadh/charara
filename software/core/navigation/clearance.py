@@ -27,6 +27,13 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from .grid import OccupancyGrid
 from .options import PlanOptions
+from .polygon import (
+    centroid as polygon_centroid,
+    distance_to_polygon,
+    nearest_on_polygon,
+    polygon_rect_distance,
+    vertices as polygon_vertices,
+)
 
 #: Small pad kept around the rotated body at a close waypoint [mm]. The
 #: configured clearance is the hard centre-distance floor; 0 is intentional:
@@ -80,6 +87,18 @@ def rotation_clearance(options: PlanOptions) -> float:
     return half_diagonal(options) + ROTATION_PAD_MM
 
 
+def turn_clearance(options: PlanOptions) -> float:
+    """Clearance needed to turn in place INCLUDING the configured margin [mm].
+
+    ``turn_margin_mm`` is the operator's safety margin on top of the body's
+    turning circle: a planned turn only happens where the centre is at least
+    this far from every border and obstacle, so a small localisation error
+    still cannot swing a corner into them.
+    """
+    margin = float(options.turn_margin_mm or 0.0)
+    return rotation_clearance(options) + max(0.0, margin)
+
+
 def obstacle_clearance(point: Sequence[float], obstacles: Sequence[Dict]) -> float:
     """Free distance from ``point`` to the nearest obstacle surface [mm]."""
     x, y = float(point[0]), float(point[1])
@@ -98,6 +117,10 @@ def obstacle_clearance(point: Sequence[float], obstacles: Sequence[Dict]) -> flo
             cx, cy = float(obstacle.get("x", 0.0)), float(obstacle.get("y", 0.0))
             radius = max(0.0, float(obstacle.get("r", 0.0)))
             distance = min(distance, math.hypot(x - cx, y - cy) - radius)
+        elif kind == "polygon":
+            points = polygon_vertices(obstacle)
+            if points:
+                distance = min(distance, distance_to_polygon(x, y, points))
     return distance
 
 
@@ -139,6 +162,7 @@ def body_clear_at(
     field_width_mm: float,
     field_height_mm: float,
     pad_mm: float = BODY_PAD_MM,
+    border_pad_mm: Optional[float] = None,
 ) -> bool:
     """Does the ROTATED body at ``point``/``theta`` stay clear?
 
@@ -147,19 +171,24 @@ def body_clear_at(
     rotated rectangle. This is the check that makes a close approach safe:
     the routing grid only knows the half-diagonal circle, which is too
     conservative for a waypoint and exactly right for an in-place turn.
+
+    ``pad_mm`` expands the OBSTACLES; ``border_pad_mm`` (default: the same)
+    expands the field border. The safety-bubble checks pass a border pad of
+    0 so a dynamic obstacle is padded without shrinking the play area.
     """
     x, y = float(point[0]), float(point[1])
     rad = math.radians(float(theta_deg))
     cos_a, sin_a = math.cos(rad), math.sin(rad)
     hw, hh = width * 0.5, height * 0.5
+    border_pad = pad_mm if border_pad_mm is None else float(border_pad_mm)
     if not (0.0 <= x <= field_width_mm and 0.0 <= y <= field_height_mm):
         return False
     for cx, cy in _body_corners(x, y, theta_deg, width, height):
         if (
-            cx < pad_mm
-            or cy < pad_mm
-            or cx > field_width_mm - pad_mm
-            or cy > field_height_mm - pad_mm
+            cx < border_pad
+            or cy < border_pad
+            or cx > field_width_mm - border_pad
+            or cy > field_height_mm - border_pad
         ):
             return False
     # The body axes and the world axes are the only separating axes for an
@@ -195,6 +224,17 @@ def body_clear_at(
             nearest_x = min(max(lx, -hw), hw)
             nearest_y = min(max(ly, -hh), hh)
             if math.hypot(lx - nearest_x, ly - nearest_y) <= radius:
+                return False
+        elif kind == "polygon":
+            points = polygon_vertices(obstacle)
+            if not points:
+                continue
+            # the real rect/polygon distance, so a concave shape is honoured;
+            # the pad cannot go below 0 (a negative pad is a tolerance, and a
+            # distance cannot be negative)
+            if polygon_rect_distance(
+                _body_corners(x, y, theta_deg, width, height), points
+            ) <= max(0.0, pad_mm):
                 return False
     return True
 
@@ -235,6 +275,7 @@ def first_body_clip(
     field_height_mm: float,
     pad_mm: float = BODY_PAD_MM,
     sample_step_mm: float = 25.0,
+    border_pad_mm: Optional[float] = None,
 ) -> Optional[Tuple[float, Tuple[float, float]]]:
     """First point of a polyline whose ROTATED body touches something.
 
@@ -247,6 +288,9 @@ def first_body_clip(
     there; that is only accepted when the centre has full half-diagonal
     clearance, which is exactly what the planner guarantees for stand-offs
     and turn-safe stops.
+
+    ``pad_mm`` is a safety margin around the obstacles; ``border_pad_mm``
+    (default: the same) controls the field border independently.
     """
     pts = [(float(p[0]), float(p[1])) for p in points if len(p) >= 2]
     if len(pts) < 2:
@@ -255,6 +299,10 @@ def first_body_clip(
     # negative pad: shrink obstacles and borders by the serialisation
     # tolerance before the body test
     check_pad = pad_mm - CLIP_TOLERANCE_MM
+    check_border_pad = (
+        (pad_mm if border_pad_mm is None else float(border_pad_mm))
+        - CLIP_TOLERANCE_MM
+    )
     walked = 0.0
     previous_heading: Optional[float] = None
     for index in range(1, len(pts)):
@@ -281,9 +329,11 @@ def first_body_clip(
                 if not body_clear_at(
                     a, previous_heading, obstacles, width, height,
                     field_width_mm, field_height_mm, pad_mm=check_pad,
+                    border_pad_mm=check_border_pad,
                 ) or not body_clear_at(
                     a, heading, obstacles, width, height,
                     field_width_mm, field_height_mm, pad_mm=check_pad,
+                    border_pad_mm=check_border_pad,
                 ):
                     return (walked, a)
         previous_heading = heading
@@ -294,6 +344,7 @@ def first_body_clip(
             if not body_clear_at(
                 sample, heading, obstacles, width, height,
                 field_width_mm, field_height_mm, pad_mm=check_pad,
+                border_pad_mm=check_border_pad,
             ):
                 return (walked + span * t, sample)
         walked += span
@@ -436,6 +487,27 @@ def closest_clear_point(
                 x = cx + dx / distance * reach
                 y = cy + dy / distance * reach
                 moved = True
+            elif kind == "polygon":
+                points = polygon_vertices(obstacle)
+                if not points:
+                    continue
+                nx, ny = nearest_on_polygon(x, y, points)
+                distance = math.hypot(x - nx, y - ny)
+                inside = distance <= 1e-9
+                if not inside and distance >= limit:
+                    continue
+                if inside:
+                    # on the outline: leave along the direction from the centre
+                    cx, cy = polygon_centroid(points)
+                    dx, dy = x - cx, y - cy
+                    distance = math.hypot(dx, dy)
+                    if distance <= 1e-9:
+                        dx, dy, distance = 1.0, 0.0, 1.0
+                else:
+                    dx, dy = x - nx, y - ny
+                x = nx + dx / distance * limit
+                y = ny + dy / distance * limit
+                moved = True
         if not moved:
             break
     return (
@@ -462,5 +534,9 @@ def build_grid(
             grid.add_rect(float(obstacle["x"]), float(obstacle["y"]), float(obstacle["w"]), float(obstacle["h"]))
         elif kind == "circle":
             grid.add_circle(float(obstacle["x"]), float(obstacle["y"]), float(obstacle["r"]))
+        elif kind == "polygon":
+            points = polygon_vertices(obstacle)
+            if points:
+                grid.add_polygon(points)
     return grid
 

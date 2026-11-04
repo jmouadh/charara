@@ -59,7 +59,11 @@ def wait_mission_end(client, timeout_s=45.0):
         status = exec_state.get("status")
         if status == "done":
             return "done"
-        if status == "aborted" and exec_state.get("message") != REPLAN_ABORT_MESSAGE:
+        if (
+            status == "aborted"
+            and not state.get("waiting")
+            and exec_state.get("message") != REPLAN_ABORT_MESSAGE
+        ):
             return "aborted: " + str(exec_state.get("message", ""))
         return None
 
@@ -283,11 +287,11 @@ class VisionTests(unittest.TestCase):
 
             routed_plan = wait_for(rerouted, timeout_s=20.0)
             self.assertIsNotNone(routed_plan, "the service never reacted when the obstacle got close")
-            # the reaction is deliberately LATE (reaction ladder, 2026-10-09):
-            # the robot creeps once the blockage is inside CAUTION_GAP_MM and
-            # only stops/swaps inside STOP_GAP_MM, so the new plan starts well
-            # past the old ~1 m horizon - and never at the mission's start
-            self.assertGreater(routed_plan["path"][0][0], 1300.0)
+            # the robot creeps when the blockage is inside CAUTION_GAP_MM and
+            # stops/swaps inside STOP_GAP_MM. The dynamic safety bubble makes
+            # it stop earlier than the old 250 mm body gap, but still well past
+            # the mission's start (never a re-plan from the start pose).
+            self.assertGreater(routed_plan["path"][0][0], 900.0)
             self.assertLess(routed_plan["path"][0][0], 1700.0)
 
             # the swapped remainder was re-routed around the obstacle: grab
@@ -439,12 +443,14 @@ class VisionTests(unittest.TestCase):
             self.assertIsNotNone(aborted, "the run must stop while waiting")
             self.assertIn("waiting", aborted["exec"]["message"].lower())
             # the stop must happen CLOSE to the blocked checkpoint: a robot
-            # crossing 1.4 m ahead must not freeze our robot from far away
+            # crossing 1.4 m ahead must not freeze our robot from far away.
+            # The dynamic safety bubble deliberately stops it earlier than
+            # the old 250 mm body gap, so allow up to 950 mm.
             time.sleep(0.3)  # let the stop deceleration settle for the check
             stop = self.client.get("/api/state").json()
             self.assertLess(
                 math.hypot(stop["x_mm"] - 1800.0, stop["y_mm"] - 500.0),
-                750.0,
+                950.0,
                 "the robot must not stop from far away",
             )
 
@@ -552,6 +558,111 @@ class VisionTests(unittest.TestCase):
             timeout_s=15.0,
         )
         self.assertIsNotNone(end, "the robot did not continue to the next waypoint")
+
+    def test_dynamic_obstacle_stops_with_a_safety_margin(self):
+        # a moving obstacle that seals the route must stop the robot with a
+        # margin, not only when the body is already touching it: the ladder
+        # measures the gap to the obstacle's safety bubble (2026-10-27)
+        """A dynamic obstacle stops the robot with a safety margin."""
+        self._pose(500.0, 500.0)
+        body = self._straight_body()
+        plan = self.client.post("/api/plan", json=body).json()
+        self.client.post("/api/execute", json={"segments": plan["segments"], "deadman_ms": 0})
+        started = wait_for(
+            lambda: (lambda state: state if state.get("x_mm", 0.0) > 550.0
+                     and state.get("exec", {}).get("status") == "running" else None)(
+                self.client.get("/api/state").json()),
+            timeout_s=30.0,
+        )
+        self.assertIsNotNone(started, "the robot never got into the run")
+
+        with self.client.websocket_connect("/ws/vision") as websocket:
+            websocket.receive_json()  # hello
+            websocket.send_json({
+                "type": "obstacles",
+                "obstacles": [{"kind": "rect", "x": 1600.0, "y": 0.0, "w": 240.0, "h": 2000.0}],
+                "ttl_ms": 60000,
+            })
+            websocket.receive_json()  # ack
+
+            waiting = wait_for(lambda: self.client.get("/api/state").json().get("waiting"), timeout_s=15.0)
+            self.assertIsNotNone(waiting, "the robot never waited for the dynamic obstacle")
+            aborted = wait_for(
+                lambda: (lambda state: state if state.get("exec", {}).get("status") == "aborted" else None)(
+                    self.client.get("/api/state").json()),
+                timeout_s=10.0,
+            )
+            self.assertIsNotNone(aborted, "the run must stop while waiting")
+            settled = wait_for(
+                lambda: (lambda state: state if state.get("state_name") == "IDLE" else None)(
+                    self.client.get("/api/state").json()),
+                timeout_s=10.0,
+            )
+            self.assertIsNotNone(settled, "the robot never settled")
+            stop = self.client.get("/api/state").json()
+            gap = 1600.0 - (float(stop["x_mm"]) + 150.0)
+            self.assertGreater(
+                gap, 350.0,
+                f"the robot stopped only {gap:.0f} mm from the obstacle - "
+                "the dynamic safety bubble is not applied",
+            )
+            websocket.send_json({"type": "obstacles", "obstacles": [], "ttl_ms": 60000})
+            websocket.receive_json()  # ack
+
+        final = wait_mission_end(self.client, timeout_s=45.0)
+        self.assertEqual(final, "done")
+
+    def test_dynamic_obstacle_behind_the_robot_is_ignored(self):
+        # a following opponent RIGHT behind the robot (inside the contact
+        # bubble) must not stop it: the robot drives away from it, so it
+        # cannot affect the remaining route. It used to re-arm the emergency
+        # stop on every camera frame and freeze the mission.
+        """A dynamic obstacle behind the robot is ignored."""
+        self._pose(500.0, 500.0)
+        body = self._straight_body()
+        plan = self.client.post("/api/plan", json=body).json()
+        self.client.post("/api/execute", json={"segments": plan["segments"], "deadman_ms": 0})
+        started = wait_for(
+            lambda: (lambda state: state if state.get("x_mm", 0.0) > 700.0
+                     and state.get("exec", {}).get("status") == "running" else None)(
+                self.client.get("/api/state").json()),
+            timeout_s=30.0,
+        )
+        self.assertIsNotNone(started, "the robot never got into the run")
+
+        with self.client.websocket_connect("/ws/vision") as websocket:
+            websocket.receive_json()  # hello
+            x_now = float(self.client.get("/api/state").json()["x_mm"])
+            # the opponent trails 10 mm behind our rear bumper: well inside
+            # the 150 mm contact bubble, but entirely behind our travel
+            websocket.send_json({
+                "type": "obstacles",
+                "obstacles": [{
+                    "kind": "rect",
+                    "x": x_now - 320.0, "y": 420.0, "w": 160.0, "h": 160.0,
+                }],
+                "ttl_ms": 60000,
+            })
+            websocket.receive_json()  # ack
+
+            deadline = time.monotonic() + 1.0
+            while time.monotonic() < deadline:
+                state = self.client.get("/api/state").json()
+                self.assertFalse(
+                    state.get("waiting"),
+                    "a trailing obstacle must not start a wait",
+                )
+                self.assertEqual(
+                    state.get("exec", {}).get("status"), "running",
+                    "the robot must keep driving away from the obstacle behind it",
+                )
+                time.sleep(0.04)
+
+            websocket.send_json({"type": "clear"})
+            websocket.receive_json()  # ack
+
+        final = wait_mission_end(self.client, timeout_s=45.0)
+        self.assertEqual(final, "done")
 
     def test_sealed_route_waits_then_resumes_when_cleared(self):
         # a moving obstacle that seals the way (a full-height wall) must never

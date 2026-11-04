@@ -134,6 +134,9 @@ def mirror_elements(
         elif kind == "rotate":
             if item.get("angle_deg") is not None:
                 item["angle_deg"] = round(-float(item["angle_deg"]), 3)
+        elif kind == "spawn" and isinstance(item.get("obstacle"), dict):
+            # the geometry carried by a spawn action is table data too
+            item["obstacle"] = mirror_obstacle(item["obstacle"], field_width_mm)
         mirrored.append(item)
     return mirrored
 
@@ -155,10 +158,18 @@ def mirror_goal(
 def mirror_obstacle(
     obstacle: Dict[str, Any], field_width_mm: float
 ) -> Dict[str, Any]:
-    """Reflect one obstacle (rect = corner+size, circle = centre+radius)."""
+    """Reflect one obstacle (rect = corner+size, circle = centre+radius,
+    polygon = its vertex list mirrored across the table centre line)."""
     item: Dict[str, Any] = dict(obstacle)
-    if str(item.get("kind", "rect")) == "circle":
+    kind = str(item.get("kind", "rect"))
+    if kind == "circle":
         item["x"] = round(field_width_mm - float(item["x"]), 3)
+    elif kind == "polygon":
+        item["points"] = [
+            [round(field_width_mm - float(point[0]), 3), round(float(point[1]), 3)]
+            for point in item.get("points") or []
+            if len(point) >= 2
+        ]
     else:
         item["x"] = round(
             field_width_mm - (float(item["x"]) + float(item.get("w", 0.0))), 3

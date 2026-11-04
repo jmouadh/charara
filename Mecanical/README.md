@@ -1,7 +1,8 @@
 # Mechanical
 
 Charara is a four-wheel **mecanum** platform: each drive module carries a
-mecanum wheel through a printed gearbox on a stepper, and the frame mixes
+mecanum wheel mounted **directly on its stepper shaft** (no gearbox or
+reduction stage), and the frame mixes
 3D-printed structural parts with aluminium plates.
 
 Two sets of images:

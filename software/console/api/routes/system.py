@@ -73,13 +73,18 @@ async def get_field() -> Dict:
 
 @router.post("/field")
 async def set_field(body: FieldIn) -> Dict:
-    """Update the field size (minimum 500 x 500 mm)."""
+    """Update the field size (minimum 500 x 500 mm) and persist it."""
     if body.width_mm < 500 or body.height_mm < 500:
         raise HTTPException(status_code=422, detail="field must be at least 500 x 500 mm")
-    state.field["width_mm"] = body.width_mm
-    state.field["height_mm"] = body.height_mm
-    # the mirrored default start of a team follows the table's centre line
-    state.resolve_team_starts()
+    # the map document owns the table size: saving it keeps the configured
+    # field across restarts and applies the start-zone spawn poses again
+    previous_start = tuple(state.team_starts[state.team])
+    snapshot = state.map_config.update(
+        {"field": {"width_mm": body.width_mm, "height_mm": body.height_mm}}
+    )
+    state.apply_map(snapshot)
+    # a mirrored start follows the table centre line: keep the robot on it
+    await state.adopt_team_start(previous_start, "table resized")
     return {"ok": True, "field": state.field}
 
 
@@ -117,21 +122,16 @@ async def set_team(body: TeamIn) -> Dict:
     state.redo_restore_pose = None  # the start pose changed: drop a pending redo
     info = state.team_info()
     start = info["start"]
-    if state.transport == "mock":
-        link = client()
-        await call(lambda: link.set_pose(start[0], start[1], start[2]))
-        await state.log(
-            "info",
-            f"team switched to {info['label']} - mock robot placed at its match start "
-            f"({start[0]:.0f}, {start[1]:.0f}) mm, {start[2]:.0f} deg"
-        )
-    else:
-        await state.log(
-            "info",
-            f"team switched to {info['label']} - place the robot at "
-            f"({start[0]:.0f}, {start[1]:.0f}) mm, {start[2]:.0f} deg and press Set Pose "
-            f"(opponent starts at ({info['opponent']['start'][0]:.0f}, {info['opponent']['start'][1]:.0f}) mm)"
-        )
+    await state.adopt_team_start(
+        force=True, what="team switched", reason=f"team switched to {info['label']}"
+    )
+    await state.log(
+        "info",
+        f"team switched to {info['label']} - match start "
+        f"({start[0]:.0f}, {start[1]:.0f}) mm, {start[2]:.0f} deg "
+        f"(opponent starts at ({info['opponent']['start'][0]:.0f}, "
+        f"{info['opponent']['start'][1]:.0f}) mm)"
+    )
     return info
 
 
@@ -146,6 +146,24 @@ async def set_pose(body: PoseIn) -> Dict:
     state.redo_restore_pose = None  # a manual placement supersedes a pending redo
     await state.log("info", f"pose set to ({body.x_mm:.0f}, {body.y_mm:.0f}) mm, {body.theta_deg:.0f} deg")
     return {"ok": True}
+
+
+@router.post("/pose/start")
+async def reset_pose_to_start() -> Dict:
+    """Put the robot back on OUR configured match start.
+
+    The start is the primary start-zone spawn of the side we play (the
+    configured ``TEAM_START_*`` is only the fallback). In MOCK the simulator
+    is teleported there at once; on the REAL robot the console never moves
+    the hardware, so the log tells the operator the pose to adopt with
+    Set Pose - the same rule as a team switch or a zone save.
+    """
+    require_no_execution()
+    previous = tuple(state.team_starts[state.team])
+    await state.adopt_team_start(
+        previous, "start pose reset", force=True, what="start pose reset"
+    )
+    return state.team_info()
 
 
 @router.post("/odometry/reset")

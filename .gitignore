@@ -33,6 +33,9 @@ STM32/**/EWARM/settings/
 # Prebuilt IAR math libraries: not referenced by any .ewp project (104 MB)
 **/CMSIS/Lib/
 
+# Runtime map document (table size, artwork, start zones) - per installation
+/map/
+
 # Test artefacts
 pytest_out.txt
 

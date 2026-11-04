@@ -24,8 +24,8 @@ Python with no dependencies):
 
 File:    software/__init__.py
 Author:  Mouadh Jeridi <jeridimouadh@gmail.com>
-Version: 3.2.0
-Date:    2026-10-19
+Version: 3.3.0
+Date:    2026-11-03
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-__version__ = "3.2.0"
+__version__ = "3.3.0"
 
 
 def _build_id() -> str:

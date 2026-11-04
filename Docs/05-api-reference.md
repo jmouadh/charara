@@ -81,7 +81,109 @@ opened (no bus/smbus2/board) - the current mode keeps running.
 {"width_mm": 3000, "height_mm": 2000,
  "defaults": {"speed_mm_s": 200, "robot_width_mm": 300, ...}}
 ```
-`POST` takes `{width_mm, height_mm}` (min 500 each).
+`POST` takes `{width_mm, height_mm}` (min 500 each). The size is stored in the
+map document (below), so it survives a restart.
+
+### Game/map configuration - `GET /api/map`, `PUT /api/map`
+
+The document the console's **Game Configuration** tab edits:
+table size, background artwork, the match clock + timed actions, one colour
+per team and the starting zones (with the robot spawn pose of a primary zone).
+
+```json
+GET /api/map
+{
+  "version": 1, "updated_at": 1792737887.3,
+  "field": {"width_mm": 3000.0, "height_mm": 2000.0},
+  "background": "field/table.png",              // "" = automatic artwork
+  "colors": {"yellow": "#efc13c", "blue": "#4b7bec"},
+  "zones": [
+    {"id": "zone-1", "team": "yellow", "type": "primary",
+     "x": 0.0, "y": 1400.0, "w": 700.0, "h": 600.0,
+     "spawn": {"x": 315.0, "y": 1800.0, "theta_deg": -90.0}}
+  ],
+  "game": {
+    "duration_s": 100.0, "warning_s": 10.0,
+    "actions": [{"id": "action-1", "at_s": 95.0, "kind": "log",
+                 "enabled": true, "params": {"message": "release"}}]
+  },
+  "backgrounds": [                              // images and PDFs on disk
+    {"name": "table.png", "value": "field/table.png", "kind": "image",
+     "url": "field/table.png?v=1792737887"},
+    {"name": "table_FINALE_1.0_2027.pdf", "value": "field/table_FINALE_1.0_2027.pdf",
+     "kind": "pdf", "url": "/api/map/background/table_FINALE_1.0_2027.pdf"}
+  ]
+}
+```
+
+`PUT /api/map` takes ANY subset - omitted fields keep their value:
+
+| Field | Meaning |
+|---|---|
+| `field` | `{width_mm, height_mm}` (min 500 each); the zones are re-clamped inside it |
+| `background` | a file name from `backgrounds` - an image (`table.png` or `field/table.png`) or a PDF (`table_FINALE_1.0_2027.pdf`); `""` = automatic; a file that is not in the field folder is ignored |
+| `colors` | `{yellow, blue}`, `#rrggbb` each (an invalid colour falls back to the default) |
+| `zones` | the COMPLETE list of starting zones (replaces the stored list) |
+| `game` | match clock: `{duration_s, warning_s, actions[]}` (duration 0 disables it; `at_s` is elapsed time, action kind `log` or the reserved `rest`) |
+
+Zone rules: `team` is `yellow`/`blue`; `type` is `primary` (main robot) or
+`secondary` (no spawn); the rectangle is clamped to the play area (minimum
+50 x 50 mm); a `spawn` only exists on a primary zone and is clamped INSIDE
+its rectangle (`theta_deg` is normalised to (-180, 180]). A primary zone's
+spawn becomes that team's match start (`GET /api/team`).
+
+```json
+PUT /api/map   {"zones": [{"team":"blue","type":"secondary","x":2400,"y":1400,"w":600,"h":500}]}
+DELETE /api/map/zones/zone-1      // remove one zone by id
+```
+
+`GET /api/map/backgrounds` lists the same `backgrounds` without the document.
+
+`GET /api/map/background/{name}` serves one artwork: an image is returned
+as-is, a **PDF** is rasterised on the service (poppler `pdftoppm`, page 1 at
+~3000 px wide - the Eurobot tables are published as PDF) and answered as
+`image/png`. The raster is cached under `MAP_CACHE_DIR` and keyed on the
+file's mtime/size, so a re-exported PDF re-renders by itself. `404` for an
+unknown or unsafe name (`..`, a sub-folder, a non-image suffix), `503` when
+the PDF cannot be rendered (typically poppler missing from the image).
+`PUT` answers `200` with the full document, `422` for a field below
+500 x 500 mm, `503` when the document cannot be written. The document lives in
+`MAP_CONFIG_FILE` (`/data/map/map.json` in docker, its own volume).
+
+Saving zones also **puts the robot's pose on the start**: in `mock` the
+simulator is teleported to the current team's primary spawn; on the REAL
+robot the service issues `SET_POSE` at that spawn (it never drives - it only
+aligns the odometry frame, and it is skipped while the robot is moving or a
+mission executes). `DELETE /api/map/zones/{id}`, `POST /api/field`, a team
+switch and a link switch do the same when the team start applies;
+`POST /api/pose/start` does it on demand (the **Reset robot to start**
+button of the Game tab).
+
+### Game clock - `GET /api/game`, `POST /api/game/start`, `POST /api/game/reset`
+
+```json
+GET /api/game
+{
+  "configured": true, "duration_s": 100.0, "warning_s": 10.0,
+  "running": true, "expired": false,
+  "elapsed_s": 42.5, "remaining_s": 57.5, "warning": false,
+  "mock_override": false, "transport": "i2c",
+  "actions": [{"id": "action-1", "at_s": 95.0, "kind": "log",
+                "enabled": true, "fired": false,
+                "params": {"message": "release"}}]
+}
+```
+
+The same `game` block is embedded in every `GET /api/state` snapshot.
+`POST /api/game/start` starts the configured clock (no body, idempotent);
+`POST /api/game/reset` rewinds it and clears the fired actions. Execute
+starts the clock automatically.
+
+At the limit, a **REAL** transport stops the run immediately and blocks a
+new `POST /api/execute` / `POST /api/resume` until Reset; **MOCK** keeps
+running and reports `expired: true`, `mock_override: true` plus the overtime
+`remaining_s` (negative) for the header warning. Timed actions fire once per
+clock run through the pluggable handler registry (Docs/11).
 
 ---
 
@@ -90,6 +192,7 @@ opened (no bus/smbus2/board) - the current mode keeps running.
 | Endpoint | Body | Effect |
 |---|---|---|
 | `POST /api/pose` | `{x_mm, y_mm, theta_deg?}` | `SET_POSE`: the board *adopts* these coordinates (the robot is placed by hand; nothing moves) |
+| `POST /api/pose/start` | - | put the robot back on OUR match start (the primary start-zone spawn of the side we play): MOCK teleports, REAL only logs the pose to adopt with Set Pose. Answers the team document; `409`-style refusal comes as `422`/`503` from the guards (refused while a mission executes) |
 | `POST /api/odometry/reset` | - | zero the odometry |
 | `POST /api/move/drive` | `{distance_mm, speed_mm_s?}` | drive forward (+) / backward (-) |
 | `POST /api/move/turn` | `{angle_deg, speed_mm_s?}` | in-place turn |
@@ -108,19 +211,33 @@ errors.
 ```json
 {
   "elements": [
+    {"kind": "erase", "name": "A"},
     {"kind": "stroke", "points": [[500,500], [1500,500]]},
     {"kind": "waypoint", "x": 1500, "y": 900, "theta_deg": -90, "combine": true},
     {"kind": "rotate", "angle_deg": 90},
-    {"kind": "pause", "seconds": 2}
+    {"kind": "pause", "seconds": 2},
+    {"kind": "spawn", "name": "A",
+     "obstacle": {"kind": "rect", "x": 1800, "y": 900, "w": 200, "h": 200}}
   ],
   "goal": {"x": 1800, "y": 900, "theta_deg": 90},
-  "obstacles": [{"kind": "rect", "x": 1000, "y": 600, "w": 200, "h": 200}],
+  "obstacles": [
+    {"kind": "rect", "type": "permanent", "x": 1000, "y": 600, "w": 200, "h": 200},
+    {"kind": "circle", "type": "permanent", "x": 2400, "y": 400, "r": 150},
+    {"kind": "polygon", "type": "game_element", "name": "A",
+     "points": [[1000, 1000], [1400, 1000], [1000, 1400]]}
+  ],
   "options": {"speed_mm_s": 900, "avoid_obstacles": true},
   "deadman_ms": 1500
 }
 ```
 * `elements` - the ordered mission (see [03 section 1](03-planner-algorithms.md));
   legacy shorthand: `"strokes": [[[x,y],...], ...]`.
+  `{"kind":"erase","name":"A"}` removes the named game element from the
+  routing grid for the legs after it; `{"kind":"spawn","name":"A",
+  "obstacle":{...}}` places it back (a different position/size/shape is
+  allowed - the geometry travels with the action). Both are idempotent, so a
+  strategy replays from any current map state. A permanent table fixture can
+  never be the target of either action.
 * `waypoint.theta_deg` - the arrival angle the robot has to HOLD on the point
   (performed before any following `pause`); `waypoint.combine` - plan the
   shortest legal arrival ARC (intermediate point + exact exit tangent)
@@ -132,7 +249,23 @@ errors.
   final leg; an arrival angle is performed at a turn-safe stand-off before
   that leg when turning on the point itself would touch.
 * `obstacles` - console-drawn obstacles; the **camera snapshot is merged in by
-  the service**, it does not need to be repeated here.
+  the service**, it does not need to be repeated here. Three shapes:
+  `{"kind":"rect","x","y","w","h"}` (corner + size), `{"kind":"circle","x","y","r"}`
+  (centre + radius) and `{"kind":"polygon","points":[[x,y], …]}` - a polygon
+  shape of **at least 3 vertices**, closed automatically (the last point joins
+  the first); its points are clamped to the table and the whole obstacle is
+  dropped when fewer than 3 usable vertices remain. All three are honoured by
+  the routing grid, the stop clearances, the rotated-body check and the
+  mid-run obstacle reactions.
+  `type` is `permanent` (default, legacy documents included) for fixed table
+  fixtures or `game_element` for a movable piece; a game element **requires a
+  unique `name`** (letters/digits/`.`/`_`/`-`/spaces, max 32 chars) because
+  strategy actions reference it. Permanents are anonymous.
+  Permanent fixtures are **locked while a mission executes**: the fixtures of
+  the plan that started the run must still be present and unchanged in every
+  mid-run re-plan. New anonymous obstacles in a re-plan request are treated
+  like camera reports (a sensor may see something new); game elements change
+  only through `erase` / `spawn` actions.
 * `options` - any `PlanOptions` field ([03 section 1](03-planner-algorithms.md)).
 * `deadman_ms` - used for the (re)started execution when the robot is running.
 
@@ -155,7 +288,10 @@ Response - the plan document:
   "path": [[x, y], ...],             // the final path (preview polyline)
   "segments": [ {"kind":"goto","x":...,"y":...,"th":...,"v":900},
                 {"kind":"turn","angle_deg":90.0,"v":150},
-                {"kind":"pause","seconds":2.0} ],
+                {"kind":"pause","seconds":2.0},
+                {"kind":"game_element","action":"erase","name":"A"},
+                {"kind":"game_element","action":"spawn","name":"A",
+                 "obstacle":{"kind":"rect","x":1800,"y":900,"w":200,"h":200}} ],
   "stats": {"length_mm": 4912.3, "est_s": 27.1, "n_segments": 162,
             "n_gotos": 140, "n_arcs": 19, "n_actions": 3, "n_primitives": 6},
   "warnings": ["leg 1 re-routed to stay clear (obstacle or field border)"],
@@ -213,8 +349,10 @@ curl -s localhost:8090/api/strategies
 | Endpoint | Body | Effect |
 |---|---|---|
 | `POST /api/execute` | `{segments?, deadman_ms?, follow_path?}` | run the given segments (or the last plan); arms the hardware deadman. `follow_path` (the plan polyline, with `STREAMING_EXEC=1`) runs the streaming follower - refused when the board cannot stream |
-| `POST /api/pause` | - | stop in place; RESUME continues with the next node |
-| `POST /api/resume` | - | continue after pause |
+| `POST /api/pause` | - | stop in place and **freeze the match clock**; RESUME finishes the interrupted node (the remaining sweep/turn/distance is re-sent from the live pose) |
+| `POST /api/resume` | - | continue after pause (the frozen match clock continues too) |
+| `POST /api/mission/redo` | - | put the robot back at the pose the last run started from (the console's **Redo**) and **rewind the match clock**. While a run is **paused** it first ends that run, so Execute replays the whole path; while a run is **running** it answers 409 (pause first) |
+| `POST /api/mission/rewind` | - | REMOVED - REDO now returns to the start of the sequence |
 | `POST /api/stop` | - | abort the run (robot holds position) |
 | `POST /api/estop` | - | latched E-STOP (clear faults afterwards) |
 | `POST /api/release_motors` | - | release the stepper drivers (idle only; **no** E-STOP latch; next move re-energizes). `409` while a run executes, a fault is latched, or the board reports a moving state |
@@ -311,7 +449,7 @@ duration_s, thresholds, metrics}`. They also run on MOCK (simulated).
 
 | Endpoint | Body | Effect |
 |---|---|---|
-| `POST /api/selftest/readiness` | - | pre-match checklist: `{passed, summary, t, checks:[{name, status: pass/warn/fail, detail}]}` - REAL link, firmware, faults, recent board log, saved settings, IMU bias/stream, robot at its match start |
+| `POST /api/selftest/readiness` | - | pre-match checklist: `{passed, summary, t, checks:[{name, status: pass/warn/fail, detail}]}` - REAL link, firmware, faults, recent board log, saved settings, IMU bias/stream, the **start zones** (both teams configured) and the robot standing in its own start zone |
 | `POST /api/selftest/square` | `{side_mm?, speed_mm_s?}` | GOTO square from the current pose; `metrics` carry position/heading closing errors plus the board-odometry copy (pass: 20 mm / 2 deg) |
 | `POST /api/selftest/arc` | `{radius_mm?, speed_mm_s?}` | left + right quarter arcs, each judged from its own start pose; `metrics.arcs[]` with per-arc errors (pass: 20 mm / 2 deg) |
 | `POST /api/selftest/chain` | `{length_mm?, radius_mm?, speed_mm_s?}` | flat-arc -> quarter-arc -> flat-arc run through the executor; `metrics.stop_count` (pass: 0 junction stops), `closing_error_mm`, `max_speed_mm_s` |
@@ -336,6 +474,7 @@ text is ignored (keep-alive). Message envelope: `{"type": ..., "data": ...}`.
 | `log` | `{level: "info"\|"warn"\|"error", message}` | every service log line |
 | `trace` | a trace entry (see section 5) | per I2C transaction |
 | `vision` | camera snapshot: `{count, obstacles, ttl_ms, source, t, t_server, reason}` | on every effective camera change / expiry |
+| `map` | the map document (same shape as `GET /api/map`) | after every `PUT /api/map` (keeps other consoles in sync) |
 
 Log messages are the human-readable narration of everything the service does -
 re-plans, swaps, warnings, mode switches, board operations.
@@ -357,6 +496,8 @@ Quick reference:
 | anything else | `{"type":"error","detail":"..."}` |
 
 * Obstacle form: `{"kind":"rect","x","y","w","h"}` or `{"kind":"circle","x","y","r"}` (mm).
+  (The camera channel takes rectangles and circles; the `polygon` shape
+  exists on the console's static obstacle list, `/api/plan`.)
 * The list **replaces** the snapshot; it expires after `ttl_ms` (default 2000,
   min 100) without refresh; coordinates are quantised to 10 mm.
 * Sender identity: `peer` (hello) and `client` (per report, e.g. `"console"`

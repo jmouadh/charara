@@ -427,6 +427,52 @@ class ApiEndToEndTests(unittest.TestCase):
         # 4. the mock robot should sit near the end of the path
         wait_for(lambda: abs(self.client.get("/api/state").json().get("x_mm", 0) - 800.0) < 60.0)
 
+    def test_game_element_actions_update_the_live_map_during_the_run(self):
+        """Erase/spawn steps run between motions and mutate the mission map."""
+        from software.console.runtime.state import state as app_state
+
+        self._place_robot(500.0, 500.0, 0.0)
+        element = {
+            "kind": "rect", "type": "game_element", "name": "A",
+            "x": 1200.0, "y": 400.0, "w": 200.0, "h": 200.0,
+        }
+        spawn_geometry = {"kind": "rect", "x": 1300.0, "y": 800.0, "w": 100.0, "h": 100.0}
+        body = {
+            "elements": [
+                {"kind": "erase", "name": "A"},
+                {"kind": "stroke", "points": [[500.0, 500.0], [1000.0, 500.0]]},
+                {"kind": "spawn", "name": "A", "obstacle": spawn_geometry},
+                {"kind": "stroke", "points": [[1000.0, 500.0], [1800.0, 500.0]]},
+            ],
+            "obstacles": [element],
+            "options": {
+                "speed_mm_s": 255, "goto_step_mm": 250, "avoid_obstacles": True,
+                "smooth": False, "robot_width_mm": 300.0, "robot_height_mm": 300.0,
+                "obstacle_margin_mm": 50.0, "waypoint_margin_mm": 0.0,
+            },
+        }
+        response = self.client.post("/api/plan", json=body)
+        self.assertEqual(response.status_code, 200, response.text)
+        plan = response.json()
+        actions = [s for s in plan["segments"] if s["kind"] == "game_element"]
+        self.assertEqual([(a["action"], a["name"]) for a in actions],
+                         [("erase", "A"), ("spawn", "A")])
+        response = self.client.post(
+            "/api/execute", json={"segments": plan["segments"], "deadman_ms": 0}
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        final = wait_mission_end(self.client, timeout_s=25.0)
+        self.assertEqual(final, "done")
+        wait_for(lambda: abs(self.client.get("/api/state").json().get("x_mm", 0) - 1800.0) < 60.0)
+        # the live mission map now carries A at the spawned geometry
+        live = [
+            obstacle for obstacle in (app_state.last_plan_request or {}).get("obstacles", [])
+            if obstacle.get("type") == "game_element"
+        ]
+        self.assertEqual(len(live), 1)
+        self.assertEqual(live[0]["name"], "A")
+        self.assertEqual((live[0]["x"], live[0]["y"]), (1300.0, 800.0))
+
     def test_execute_follow_path_streams_on_the_mock(self):
         """STREAMING_EXEC + follow_path -> the streaming backend drives the run.
 
@@ -686,6 +732,70 @@ class ApiEndToEndTests(unittest.TestCase):
         final = wait_mission_end(self.client, timeout_s=40.0)
         self.assertEqual(final, "done")
         wait_for(lambda: abs(self.client.get("/api/state").json().get("x_mm", 0.0) - 2500.0) < 80.0, timeout_s=10.0)
+
+    def test_redo_while_paused_ends_the_run_and_returns_to_the_sequence_start(self):
+        """Pause then Redo: the run ends and the robot is back at the path start."""
+        self.client.post("/api/pose", json={"x_mm": 500.0, "y_mm": 500.0, "theta_deg": 0.0})
+        wait_for(lambda: abs(self.client.get("/api/state").json().get("x_mm", 0) - 500.0) < 1.0)
+        body = {
+            "elements": [{"kind": "stroke", "points": [[500.0, 500.0], [2400.0, 500.0]]}],
+            "options": {"speed_mm_s": 200.0, "waypoint_margin_mm": 0},
+        }
+        plan = self.client.post("/api/plan", json=body).json()
+        self.client.post("/api/execute", json={"segments": plan["segments"], "deadman_ms": 0})
+        wait_for(lambda: self.client.get("/api/state").json().get("x_mm", 0.0) > 900.0,
+                 timeout_s=30.0)
+        self.assertEqual(self.client.post("/api/pause").status_code, 200)
+        paused = wait_for(
+            lambda: (lambda status: status if status == "paused" else None)(
+                self.client.get("/api/state").json().get("exec", {}).get("status")),
+            timeout_s=10.0,
+        )
+        self.assertEqual(paused, "paused")
+        self.assertGreater(self.client.get("/api/state").json().get("x_mm", 0.0), 800.0)
+
+        response = self.client.post("/api/mission/redo")
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["start"][:2], [500.0, 500.0])
+        back = wait_for(
+            lambda: (lambda state: state if abs(state.get("x_mm", 0.0) - 500.0) < 2.0 else None)(
+                self.client.get("/api/state").json()),
+            timeout_s=10.0,
+        )
+        self.assertIsNotNone(back, "the robot did not go back to the sequence start")
+        self.assertEqual(
+            self.client.get("/api/state").json().get("exec", {}).get("status"), "aborted",
+            "the paused run must be over so Execute replays the whole path",
+        )
+        # Redo restarts the counters: the match clock is back to its duration
+        # and stopped (the next Execute starts it again)
+        game = self.client.get("/api/game").json()
+        self.assertFalse(game["running"], game)
+        self.assertFalse(game["paused"], game)
+        self.assertEqual(game["elapsed_s"], 0.0, game)
+        self.assertEqual(game["remaining_s"], game["duration_s"], game)
+        # ... and the full path can be replayed from the start
+        self.client.post("/api/execute", json={"segments": plan["segments"], "deadman_ms": 0})
+        self.assertEqual(wait_mission_end(self.client, timeout_s=40.0), "done")
+        wait_for(lambda: self.client.get("/api/state").json().get("x_mm", 0.0) > 2300.0,
+                 timeout_s=10.0)
+
+    def test_redo_is_refused_while_the_mission_runs(self):
+        """A running mission must be paused first - redo never stops it silently."""
+        self.client.post("/api/pose", json={"x_mm": 500.0, "y_mm": 500.0, "theta_deg": 0.0})
+        wait_for(lambda: abs(self.client.get("/api/state").json().get("x_mm", 0) - 500.0) < 1.0)
+        body = {
+            "elements": [{"kind": "stroke", "points": [[500.0, 500.0], [2400.0, 500.0]]}],
+            "options": {"speed_mm_s": 200.0, "waypoint_margin_mm": 0},
+        }
+        plan = self.client.post("/api/plan", json=body).json()
+        self.client.post("/api/execute", json={"segments": plan["segments"], "deadman_ms": 0})
+        wait_for(lambda: self.client.get("/api/state").json().get("x_mm", 0.0) > 700.0,
+                 timeout_s=30.0)
+        self.assertEqual(self.client.post("/api/mission/redo").status_code, 409)
+        self.client.post("/api/stop")
+        wait_mission_end(self.client, timeout_s=20.0)
 
     def test_replan_on_detour_stays_on_route(self):
         # regression: while the robot is mid-detour (off the drawing), adding

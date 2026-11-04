@@ -4,6 +4,12 @@
 # 'charara' package expects, so the source and the package share one version.
 FROM python:3.11-slim
 
+# poppler-utils: rasterises a PDF table artwork (the Eurobot publication) into
+# the map background - the browser receives a PNG, not a 7 MB vector PDF
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends poppler-utils \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /srv
 
 COPY pyproject.toml README.md ./
@@ -27,6 +33,11 @@ ENV UI_DIR=/srv/ui/static
 # same files
 ENV STRATEGY_DIR=/data/strategies
 VOLUME /data/strategies
+
+# the editable map document (table size, artwork, start zones) lives in its
+# own volume so it survives a redeploy/rebuild of the containers
+ENV MAP_CONFIG_FILE=/data/map/map.json
+VOLUME /data/map
 
 EXPOSE 8000
 CMD ["uvicorn", "software.console.main:app", "--host", "0.0.0.0", "--port", "8000", "--log-level", "info"]

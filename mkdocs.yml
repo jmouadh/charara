@@ -79,6 +79,7 @@ nav:
       - Console guide: 04-console-guide.md
       - API reference: 05-api-reference.md
       - Vision and camera: 06-vision-camera-integration.md
+      - Game time and timed actions: 11-game-time.md
   - Working on it:
       - Development guide: 07-development-guide.md
       - Roadmap: 10-roadmap.md

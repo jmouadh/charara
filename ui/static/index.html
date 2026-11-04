@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8"/>
@@ -15,7 +15,7 @@
   </script>
   <link rel="icon" type="image/png" sizes="192x192" href="logo/charara-mark.png"/>
   <link rel="apple-touch-icon" href="logo/charara-mark.png"/>
-  <link rel="stylesheet" href="css/style.css?v=74"/>
+  <link rel="stylesheet" href="css/style.css?v=97"/>
 </head>
 <body>
   <header>
@@ -46,6 +46,23 @@
       <span id="robot-pill" class="pill off" title="I2C link to the STM32">ROBOT</span>
       <span id="state-pill" class="pill" title="Motion state">-</span>
       <span id="exec-pill" class="pill hidden" title="Path execution">-</span>
+      <span id="task-timer" class="pill timer" title="Task time - the duration the plan is expected to take, then the clock from Execute until the run stops">
+        <svg class="timer-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="13.6" r="7.6"/>
+          <path d="M12 9.6v4.3l2.7 1.8"/>
+          <path d="M9.3 2.6h5.4"/>
+          <path d="M12 2.6v2.2"/>
+        </svg>
+        <span id="task-timer-value">0.00 s</span>
+      </span>
+      <span id="game-timer" class="pill game-timer hidden" title="Game clock - remaining match time (Game settings)">
+        <svg class="timer-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M6 21V3"/>
+          <path d="M6 4h11l-2.2 4L17 12H6"/>
+        </svg>
+        <span id="game-timer-value">100.0 s</span>
+        <span id="game-timer-warn" class="game-warn" aria-hidden="true">!</span>
+      </span>
     </div>
 
     <div class="header-actions">
@@ -65,8 +82,6 @@
         <button id="btn-clear-path" class="ghost">Clear path</button>
         <button id="btn-clear-obs" class="ghost">Clear obstacles</button>
       </div>
-
-      <div id="page-mission">
       <section class="card">
         <h3>Tools</h3>
         <div class="tools">
@@ -106,13 +121,17 @@
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 11V8a5 5 0 0 1 9.6-2"/><path d="M17 13v3a5 5 0 0 1-9.6 2"/><rect x="4.5" y="10.5" width="5" height="4" rx="1"/><rect x="14.5" y="10.5" width="5" height="4" rx="1"/></svg>
             <span>Release</span>
           </button>
-          <button class="tool" data-tool="rect" title="Drag a rectangular STATIC obstacle (locks while the robot executes)">
+          <button class="tool" data-tool="rect" title="Drag a rectangular obstacle - choose Permanent (table fixture) or Game element (named, movable) in the box below">
             <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4.5" y="4.5" width="15" height="15" rx="2"/></svg>
             <span>Box</span>
           </button>
-          <button class="tool" data-tool="circle" title="Drag a circular STATIC zone (locks while the robot executes)">
+          <button class="tool" data-tool="circle" title="Drag a circular obstacle - choose Permanent (table fixture) or Game element (named, movable) in the box below">
             <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7.6"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/></svg>
             <span>Zone</span>
+          </button>
+          <button class="tool" data-tool="polygon" title="Polygon obstacle: click the points one by one - they are joined in order and the last one closes the shape back to the first. Finish with Enter, a double-click or a click on the first point; Esc cancels. Click an existing obstacle to edit its coordinates">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4.2 19.5 9.4 16.6 18.4H7.4L4.5 9.4z"/><circle cx="12" cy="4.2" r="1.5" fill="currentColor" stroke="none"/><circle cx="19.5" cy="9.4" r="1.5" fill="currentColor" stroke="none"/><circle cx="7.4" cy="18.4" r="1.5" fill="currentColor" stroke="none"/></svg>
+            <span>Polygon</span>
           </button>
           <button class="tool active" data-tool="pan" title="Drag to pan the map - wheel zooms">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5v17M3.5 12h17"/><path d="M12 3.5 9.8 5.7M12 3.5l2.2 2.2M12 20.5l-2.2-2.2M12 20.5l2.2-2.2M3.5 12l2.2-2.2M3.5 12l2.2 2.2M20.5 12l-2.2-2.2M20.5 12l-2.2 2.2"/></svg>
@@ -134,7 +153,7 @@
         <div id="tool-params" class="tool-params hidden">
           <div class="tp-head">
             <span id="tool-params-title">Delay</span>
-            <button id="tool-params-close" class="tp-close" type="button" title="Close (Esc)">Ã—</button>
+            <button id="tool-params-close" class="tp-close" type="button" title="Close (Esc)">×</button>
           </div>
           <div id="tp-pause" class="tp-group hidden">
             <label class="tp-field">Delay
@@ -167,6 +186,25 @@
               <button id="btn-release-now" class="ghost tp-add" type="button">Release now</button>
             </div>
           </div>
+          <div id="tp-obstacle" class="tp-group hidden">
+            <label class="tp-field">Type
+              <span class="field"><select id="obstacle-type" title="Permanent = fixed table fixture; Game element = movable and referenced by erase/spawn actions"><option value="permanent">Permanent</option><option value="game_element">Game element</option></select></span>
+            </label>
+            <label class="tp-field" id="tp-obstacle-name-row">Name
+              <span class="field"><input id="obstacle-name" type="text" maxlength="32" placeholder="e.g. A" list="obstacle-name-options"/></span>
+            </label>
+            <datalist id="obstacle-name-options"></datalist>
+            <label class="tp-field" id="tp-obstacle-mode-row" title="Place now: the drawn shape moves the marker on the map immediately. Spawn step: the drawn shape becomes the destination of a spawn step and the marker keeps its INITIAL position until the robot reaches that step.">Placement
+              <span class="field"><select id="obstacle-mode"><option value="now">Place now</option><option value="spawn">Spawn step</option></select></span>
+            </label>
+            <p class="hint tp-note" id="tp-obstacle-note">Game elements need a unique name (A, B, ...). They can be erased and spawned by the strategy; permanent obstacles lock once the sequence starts.</p>
+          </div>
+          <div id="tp-erase" class="tp-group hidden">
+            <label class="tp-field" title="Delete now: the marker is removed from the map immediately. Add erase step: the removal is scheduled in the sequence and the marker stays on the map until the robot reaches that step.">Game element click
+              <span class="field"><select id="erase-mode"><option value="now">Delete now</option><option value="step">Add erase step</option></select></span>
+            </label>
+            <p class="hint tp-note">"Add erase step" is programmable: the game element stays on the map (and the route keeps avoiding it) until the robot reaches that step. Permanent obstacles are never scheduled - they can only be created at the setup and deleted immediately.</p>
+          </div>
           <div id="tp-waypoint" class="tp-group hidden">
             <label class="tp-field" title="Speed used for the next waypoint(s) you place. Empty = system speed.">Waypoint speed
               <span class="field"><input id="seq-waypoint-speed" type="number" step="10" min="100" max="900" placeholder="system"/><span class="unit">mm/s</span></span>
@@ -181,13 +219,18 @@
         <p class="hint tool-note" id="tool-hint">Drag to pan - wheel zooms.</p>
         <details class="hint-fold">
           <summary>Details</summary>
-          <p class="hint">The dashed squares <b>R1...</b> (300x300 mm) are the opponent robots - this console reports them to the service like a camera does (<b>count and positions in Config</b>). <b>Drag them anytime, also while your robot drives.</b> The service reacts only when the other robot gets <b>close to yours</b> (~0.7 m): then it re-routes, or stops and waits until the way is clear, and continues by itself. A robot sitting on the path <b>far ahead changes nothing</b> - it is re-checked as your robot approaches. If a <b>real camera</b> streams on the vision channel, the console yields and that input is used. Box/Zone are static obstacles: they lock while the robot moves.</p>
+          <p class="hint">The dashed squares <b>R1...</b> (300x300 mm) are the opponent robots - this console reports them to the service like a camera does (<b>count and positions in Config</b>). <b>Drag them anytime, also while your robot drives.</b> The service reacts only when the other robot gets <b>close to yours</b> (~0.7 m): then it re-routes, or stops and waits until the way is clear, and continues by itself. A robot sitting on the path <b>far ahead changes nothing</b> - it is re-checked as your robot approaches. If a <b>real camera</b> streams on the vision channel, the console yields and that input is used. Box/Zone/Polygon can be <b>Permanent</b> fixtures (created once, locked once the sequence starts, never scheduled) or named <b>Game elements</b>; a game element chooses <b>Place now</b> (the marker moves immediately) or <b>Spawn step</b> (the marker keeps its initial position until the robot reaches that step - a dashed preview shows the destination). The manual tools lock while the robot moves.</p>
         </details>
       </section>
 
       <section class="card">
         <h3>Sequence <small>- executed in order</small></h3>
         <div id="seq-list" class="seq-list"></div>
+        <div class="row seq-elements">
+          <select id="seq-element-name" title="Game element referenced by the erase/spawn step"></select>
+          <button id="btn-add-erase" class="ghost m-btn" title="Add a step that removes the named game element from the map (the robot may then drive through it). The marker is NOT removed now: it stays until the run reaches the step.">Erase element</button>
+          <button id="btn-add-spawn" class="ghost m-btn" title="Place the named game element where the robot should put it: click the map to drop the spawn destination. The marker keeps its initial position until the run reaches that step.">Spawn element</button>
+        </div>
         <div class="row seq-actions">
           <button id="btn-undo" class="ghost m-btn" title="Undo the last edit of the sequence">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 7H15a5 5 0 0 1 0 10h-3"/><path d="M11.5 4 8.5 7l3 3"/></svg>
@@ -225,11 +268,11 @@
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3"/><path d="M4.5 4.5V10h5.5"/><path d="M12 9.2v3l2.1 1.4"/></svg>
               <span>Redo</span>
             </button>
-            <button id="btn-pause" class="m-btn" title="Stop in place - resume continues with the next node">
+            <button id="btn-pause" class="m-btn" title="Stop in place - Resume finishes the interrupted move where it stopped">
               <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="5" width="3.6" height="14" rx="1" fill="currentColor" stroke="none"/><rect x="13.4" y="5" width="3.6" height="14" rx="1" fill="currentColor" stroke="none"/></svg>
               <span>Pause</span>
             </button>
-            <button id="btn-resume" class="m-btn" title="Continue a paused run">
+            <button id="btn-resume" class="m-btn" title="Continue a paused run - the node it was driving is finished, then the plan goes on">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7.5 5.2v13.6L18.5 12z" fill="currentColor" stroke="none"/></svg>
               <span>Resume</span>
             </button>
@@ -352,7 +395,7 @@
             </button>
             <button id="pad-turn-ccw" class="pad-btn left" title="Turn left (CCW) by the angle">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12a9 9 0 1 0 9-9 9.7 9.7 0 0 0-6.7 2.7L3 8"/><path d="M3 3v5h5"/></svg>
-              <span class="pad-cap">+90Â°</span>
+              <span class="pad-cap">+90°</span>
             </button>
             <button id="pad-back" class="pad-btn down" title="Drive backward by the distance">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v15"/><path d="M6 13l6 6 6-6"/></svg>
@@ -360,7 +403,7 @@
             </button>
             <button id="pad-turn-cw" class="pad-btn right" title="Turn right (CW) by the angle">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-9-9 9.7 9.7 0 0 1 6.7 2.7L21 8"/><path d="M21 3v5h-5"/></svg>
-              <span class="pad-cap">-90Â°</span>
+              <span class="pad-cap">-90°</span>
             </button>
           </div>
           <div class="pad-arcs">
@@ -375,7 +418,9 @@
           </div>
         </div>
       </section>
-      </div><!-- /page-mission -->
+
+
+
       <footer id="panel-footer" class="panel-footer">
         <span class="ver" title="Console software version (RPi service + UI)">SW <b id="sw-version">-</b></span>
         <span class="ver-sep"></span>
@@ -436,6 +481,52 @@
             <button id="goal-cancel" class="ghost" title="Close (Esc)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
           </div>
         </div>
+        <div id="obstacle-popup" class="pose-popup obstacle-popup hidden">
+          <div class="pp-head"><b id="obstacle-popup-title">Obstacle</b> <span>- coordinates</span></div>
+          <div class="pp-row"><label>type</label><span id="obstacle-popup-type" class="u">permanent</span></div>
+          <div class="pp-row" id="obstacle-popup-name-row"><label for="obstacle-name-edit">name</label><input id="obstacle-name-edit" type="text" maxlength="32"/></div>
+          <div id="obstacle-rect-fields">
+            <div class="pp-row"><label for="obstacle-x">X</label><input id="obstacle-x" type="number" step="10"/><span class="u">mm</span></div>
+            <div class="pp-row"><label for="obstacle-y">Y</label><input id="obstacle-y" type="number" step="10"/><span class="u">mm</span></div>
+            <div class="pp-row"><label for="obstacle-w">W</label><input id="obstacle-w" type="number" step="10" min="10"/><span class="u">mm</span></div>
+            <div class="pp-row"><label for="obstacle-h">H</label><input id="obstacle-h" type="number" step="10" min="10"/><span class="u">mm</span></div>
+          </div>
+          <div id="obstacle-circle-fields" class="hidden">
+            <div class="pp-row"><label for="obstacle-cx">X</label><input id="obstacle-cx" type="number" step="10"/><span class="u">mm</span></div>
+            <div class="pp-row"><label for="obstacle-cy">Y</label><input id="obstacle-cy" type="number" step="10"/><span class="u">mm</span></div>
+            <div class="pp-row"><label for="obstacle-r">R</label><input id="obstacle-r" type="number" step="10" min="10"/><span class="u">mm</span></div>
+          </div>
+          <div id="obstacle-poly-fields" class="hidden">
+            <div class="pp-head pp-sub">Points <span>- joined in order, closed</span></div>
+            <div id="obstacle-points" class="obstacle-points"></div>
+          </div>
+          <div class="pp-actions">
+            <button id="obstacle-apply" class="primary">Apply</button>
+            <button id="obstacle-delete" class="ghost" title="Remove this obstacle"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 7h15"/><path d="M9.5 7V4.8h5V7"/><path d="M6.3 7l1 12.6h9.4L17.7 7"/><path d="M10.2 10.5v6M13.8 10.5v6"/></svg></button>
+            <button id="obstacle-close" class="ghost" title="Close (Esc)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+          </div>
+        </div>
+        <div id="zone-popup" class="pose-popup zone-popup hidden">
+          <div class="pp-head">Starting zone <span id="zone-popup-note">- team &amp; spawn</span></div>
+          <div class="pp-row"><label for="zone-team">team</label><select id="zone-team" title="Which team owns this starting zone"><option value="yellow">Yellow</option><option value="blue">Blue</option></select></div>
+          <div class="pp-row"><label for="zone-type">type</label><select id="zone-type" title="Primary = main robot (carries a spawn pose); Secondary = small/secondary robot"><option value="primary">Primary</option><option value="secondary">Secondary</option></select></div>
+          <div class="pp-row"><label for="zone-x">X</label><input id="zone-x" type="number" step="10"/><span class="u">mm</span></div>
+          <div class="pp-row"><label for="zone-y">Y</label><input id="zone-y" type="number" step="10"/><span class="u">mm</span></div>
+          <div class="pp-row"><label for="zone-w">W</label><input id="zone-w" type="number" step="10" min="50"/><span class="u">mm</span></div>
+          <div class="pp-row"><label for="zone-h">H</label><input id="zone-h" type="number" step="10" min="50"/><span class="u">mm</span></div>
+          <div id="zone-spawn-fields">
+            <div class="pp-head pp-sub">Robot spawn <span>- inside the zone</span></div>
+            <div class="pp-row"><label for="zone-spawn-x">X</label><input id="zone-spawn-x" type="number" step="10"/><span class="u">mm</span></div>
+            <div class="pp-row"><label for="zone-spawn-y">Y</label><input id="zone-spawn-y" type="number" step="10"/><span class="u">mm</span></div>
+            <div class="pp-row"><label for="zone-spawn-th">theta</label><input id="zone-spawn-th" type="number" step="5" min="-180" max="180"/><span class="u">deg</span></div>
+            <button id="btn-zone-spawn-centre" class="ghost zone-centre" type="button" title="Put the spawn at the centre of the zone">Centre of the zone</button>
+          </div>
+          <div class="pp-actions">
+            <button id="zone-apply" class="primary">Apply</button>
+            <button id="zone-delete" class="ghost" title="Remove this starting zone"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 7h15"/><path d="M9.5 7V4.8h5V7"/><path d="M6.3 7l1 12.6h9.4L17.7 7"/><path d="M10.2 10.5v6M13.8 10.5v6"/></svg></button>
+            <button id="zone-cancel" class="ghost" title="Close (Esc)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+          </div>
+        </div>
         <div id="telemetry" class="overlay telemetry">
           <div><span class="k">x</span><span id="t-x">-</span><span class="u">mm</span></div>
           <div><span class="k">y</span><span id="t-y">-</span><span class="u">mm</span></div>
@@ -488,6 +579,9 @@
         <button id="settings-tab-ui" class="settings-tab" type="button" role="tab" data-settings="ui" aria-controls="settings-ui" aria-selected="false" aria-expanded="false" tabindex="-1" title="Map and display preferences">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m3 6 6-3 6 3 6-3v15l-6 3-6-3-6 3zM9 3v15M15 6v15"/></svg><span>UI</span>
         </button>
+        <button id="settings-tab-map" class="settings-tab" type="button" role="tab" data-settings="map" aria-controls="settings-map" aria-selected="false" aria-expanded="false" tabindex="-1" title="Game configuration: table map, match clock, timed actions and team start zones">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 8h11a4 4 0 0 1 4 4v3.5a2.5 2.5 0 0 1-4.3 1.7L15 15H9l-2.2 2.2A2.5 2.5 0 0 1 2.5 15.5V12a4 4 0 0 1 4-4z"/><path d="M7 11v3M5.5 12.5h3M16 11.5h.01M18 13.5h.01"/></svg><span>Game</span>
+        </button>
         <button id="settings-tab-calibration" class="settings-tab" type="button" role="tab" data-settings="calibration" aria-controls="settings-calibration" aria-selected="false" aria-expanded="false" tabindex="-1" title="Calibration procedures">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h16M6 16l4-4 3 2 5-7"/><path d="M15 7h3v3M5 4v5M9 4v2M13 4v5M17 4v2"/></svg><span>Calibrate</span>
         </button>
@@ -521,7 +615,18 @@
           <label class="field-col">Waypoint clearance (extra)
             <span class="field"><input id="robot-wp-margin" type="number" value="0" min="0" step="10"/><span class="unit">mm</span></span>
           </label>
-          <span class="photo-hint">0 = half the robot height; larger keeps waypoints farther from obstacles and the field border. Close waypoints are approached straight, with the arrival angle performed before the final leg.</span>
+          <label class="field-col">Pose clearance (extra)
+            <span class="field"><input id="robot-pose-margin" type="number" value="0" min="0" step="10"/><span class="unit">mm</span></span>
+          </label>
+          <label class="field-col">Turn clearance (extra)
+            <span class="field"><input id="robot-turn-margin" type="number" value="30" min="0" step="10"/><span class="unit">mm</span></span>
+          </label>
+          <span class="photo-hint">0 = half the robot height; larger keeps waypoints and placed poses
+          farther from obstacles and the field border (a pose with 0 may stand with its edge on the border).
+          The turn clearance is added to the body's diagonal: a planned turn only happens where the robot has
+          that much room, so the straight move before the first turn and the one that leaves a close stop get
+          longer by the same amount. Close waypoints are approached straight, with the arrival angle performed
+          before the final leg.</span>
         </div>
         <div class="m-group">
           <div class="m-label">Robot photo</div>
@@ -577,8 +682,8 @@
         <div class="m-group">
           <div class="m-label">Motion</div>
           <label class="opt-row">
-            <span class="opt-head"><span>Speed</span><output id="opt-speed-out">500</output><span class="unit">mm/s</span></span>
-            <input id="opt-speed" type="range" min="100" max="900" value="500"/>
+            <span class="opt-head"><span>Speed</span><output id="opt-speed-out">350</output><span class="unit">mm/s</span></span>
+            <input id="opt-speed" type="range" min="100" max="900" value="350"/>
           </label>
         </div>
         <div class="m-group">
@@ -678,6 +783,19 @@
           <label class="color-row"><span>Ruler &amp; angle</span><span class="color-pick"><input id="color-measure" type="color" value="#3ec9d6"/><span class="color-hex" data-hex="color-measure">#3EC9D6</span></span></label>
           <label class="color-row"><span>Pose marker</span><span class="color-pick"><input id="color-draft" type="color" value="#f5a623"/><span class="color-hex" data-hex="color-draft">#F5A623</span></span></label>
         </div>
+        <div class="m-group">
+          <div class="m-label">Layer opacity <small>- transparency on the map</small></div>
+          <label class="opacity-row"><span>Our robot</span><span class="opacity-pick"><input id="opacity-robot" type="range" min="0" max="100" step="5" value="100" title="Body opacity of our robot - 100 % = solid in its colour"/><span class="opacity-val" data-opacity="opacity-robot">100%</span></span></label>
+          <label class="opacity-row"><span>Other robots</span><span class="opacity-pick"><input id="opacity-opponent" type="range" min="0" max="100" step="5" value="100" title="Opacity of the other robots (the camera squares and reports) - 100 % = solid in their colour"/><span class="opacity-val" data-opacity="opacity-opponent">100%</span></span></label>
+          <label class="opacity-row"><span>Obstacles</span><span class="opacity-pick"><input id="opacity-obstacle" type="range" min="0" max="100" step="5" value="100" title="Opacity of the drawn box/zone obstacles - 100 % = a solid block in their colour"/><span class="opacity-val" data-opacity="opacity-obstacle">100%</span></span></label>
+          <p class="hint"><b>100 %</b> paints the layer solid in its colour - lower it to let the field artwork and the path show through. Double-click a slider to make that layer solid again. Remembered in this browser.</p>
+          <div class="row">
+            <button id="btn-opacity-reset" class="ghost m-btn wide" title="Back to fully opaque">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3"/><path d="M4.5 5v4h4"/></svg>
+              <span>Reset transparency</span>
+            </button>
+          </div>
+        </div>
         <div class="row">
           <button id="btn-colors-reset" class="ghost m-btn wide" title="Restore the default palette">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3"/><path d="M4.5 5v4h4"/></svg>
@@ -687,27 +805,110 @@
       </section>
 
       <section class="card">
-        <h3>Field <small>- table size</small></h3>
+        <h3>Game <small>- map, clock &amp; starting zones</small></h3>
+        <p class="hint">The table size, the background artwork, the team starting zones, the match clock and its timed actions live in the <b>Game Configuration</b> tab of this settings rail (between UI and Calibrate).</p>
+        <button id="btn-open-map-tab" class="primary m-btn wide" title="Open the Game Configuration tab of this settings rail">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 8h11a4 4 0 0 1 4 4v3.5a2.5 2.5 0 0 1-4.3 1.7L15 15H9l-2.2 2.2A2.5 2.5 0 0 1 2.5 15.5V12a4 4 0 0 1 4-4z"/><path d="M7 11v3M5.5 12.5h3M16 11.5h.01M18 13.5h.01"/></svg>
+          <span>Open Game Configuration</span>
+        </button>
+      </section>
+      </div><!-- /settings-ui -->
+
+      <div class="settings-page hidden" id="settings-map" role="tabpanel" aria-labelledby="settings-tab-map" hidden>
+      <section class="card">
+        <h3>Field <small>- size &amp; artwork</small></h3>
         <div class="m-group">
-          <div class="m-label">Size</div>
+          <div class="m-label">Play area</div>
           <div class="grid2">
             <label class="field-col">Width <span class="field"><input id="field-w" type="number" value="3000" min="500" step="100"/><span class="unit">mm</span></span></label>
             <label class="field-col">Height <span class="field"><input id="field-h" type="number" value="2000" min="500" step="100"/><span class="unit">mm</span></span></label>
           </div>
-          <button id="btn-field" class="primary m-btn wide" title="Apply the field size and re-fit the view">
+          <button id="btn-field" class="primary m-btn wide" title="Apply the field size (saved in the map configuration) and re-fit the view">
             <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>
-            <span>Apply</span>
+            <span>Apply size</span>
           </button>
         </div>
         <div class="m-group">
-          <div class="m-label">View</div>
-          <button id="btn-view" class="ghost m-btn wide" title="Zoom the map so the whole field fits the window">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H4v5"/><path d="M15 4h5v5"/><path d="M15 20h5v-5"/><path d="M9 20H4v-5"/></svg>
-            <span>Fit view</span>
-          </button>
+          <div class="m-label">Background artwork <span class="sub">(ui/static/field)</span></div>
+          <label class="field-col">Image
+            <span class="field"><select id="map-bg-select" title="Background drawn behind the map - files come from ui/static/field"></select></span>
+          </label>
+          <label class="opacity-row"><span>Background opacity</span><span class="opacity-pick"><input id="map-bg-opacity" type="range" min="0" max="100" step="5" value="100" title="Fade the field artwork so the drawn mission stays readable - remembered in this browser"/><span class="opacity-val" data-opacity="map-bg-opacity">100%</span></span></label>
+          <div class="row map-bg-actions">
+            <button id="btn-map-bg-refresh" class="ghost m-btn" title="Rescan the field folder for new background images">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3"/><path d="M4.5 4.5V10h5.5"/></svg>
+              <span>Rescan</span>
+            </button>
+            <button id="btn-view" class="ghost m-btn" title="Zoom the map so the whole field fits the window">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4H4v5"/><path d="M15 4h5v5"/><path d="M15 20h5v-5"/><path d="M9 20H4v-5"/></svg>
+              <span>Fit view</span>
+            </button>
+          </div>
+          <p class="hint" id="map-bg-hint">The choice is saved in the map configuration. Drop a new image in <b>ui/static/field</b> and press Rescan.</p>
         </div>
       </section>
-      </div><!-- /settings-ui -->
+
+      <section class="card">
+        <h3>Game time <small>- match clock &amp; timed actions</small></h3>
+        <div class="m-group">
+          <div class="m-label">Match clock</div>
+          <div class="grid2">
+            <label class="field-col">Game duration
+              <span class="field"><input id="game-duration" type="number" value="100" min="0" max="3600" step="5"/><span class="unit">s</span></span>
+            </label>
+            <label class="field-col">Red warning in last
+              <span class="field"><input id="game-warning" type="number" value="10" min="0" max="3600" step="1"/><span class="unit">s</span></span>
+            </label>
+          </div>
+          <div class="row game-clock-actions">
+            <button id="btn-game-save" class="primary m-btn" type="button" title="Save the match clock settings in the game document">Save clock</button>
+            <button id="btn-game-start" class="ghost m-btn" type="button" title="Start the match clock now - Execute also starts it automatically">Start clock</button>
+            <button id="btn-game-reset" class="ghost m-btn" type="button" title="Rewind the clock and clear fired actions">Reset</button>
+          </div>
+          <p class="hint" id="game-status">-</p>
+          <p class="hint"><b>Game duration 0</b> disables the clock. The clock starts automatically on <b>Execute</b> (or with <b>Start clock</b>) and runs independently of Pause. At the limit, a <b>REAL</b> run stops immediately; <b>MOCK</b> keeps running and the header timer shows the overtime warning.</p>
+        </div>
+        <div class="m-group">
+          <div class="m-label">Timed actions <span class="sub">(once per match)</span></div>
+          <div id="game-action-list" class="game-action-list"></div>
+          <p class="hint" id="game-action-empty">No timed action yet.</p>
+          <div class="row">
+            <button id="btn-game-action-add" class="ghost m-btn" type="button" title="Add a timed action">Add action</button>
+            <button id="btn-game-action-save" class="primary m-btn" type="button" title="Save the timed actions in the game document">Save actions</button>
+          </div>
+          <p class="hint">Actions fire at the <b>elapsed</b> match time (for example 95 s of a 100 s match), once per clock run. <b>Log</b> writes one event-log line now. <b>REST call</b> is the reserved bridge for a future external actuator: it is configurable and dispatched through the documented handler architecture, but performs no network request yet (Docs/11).</p>
+        </div>
+      </section>
+
+      <section class="card">
+        <h3>Starting zones <small>- teams &amp; spawn poses</small></h3>
+        <div class="tools zone-tools">
+          <button class="tool" data-tool="startzone" id="btn-zone-tool" title="Drag a rectangle on the map to create a team starting zone; click an existing zone to edit it">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5.5" width="17" height="13" rx="2" stroke-dasharray="3 2"/><path d="M8 12h8"/><path d="M11.5 9.5 12 12l-.5 2.5"/></svg>
+            <span>Start zone</span>
+          </button>
+        </div>
+        <p class="hint" id="zone-hint">Pick <b>Start zone</b>, then drag a rectangle on the map. The popup asks for the team, the type (primary/secondary) and - for a primary zone - the robot spawn pose inside it. Click a zone on the map (or its row below) to edit it.</p>
+        <div id="zone-list" class="zone-list"></div>
+        <p class="hint" id="zone-empty">No starting zone yet.</p>
+        <div class="m-group">
+          <div class="m-label">Robot start <span class="sub">(our side)</span></div>
+          <button id="btn-reset-start" class="ghost m-btn wide" title="Put the robot back on our configured match start (the primary start-zone spawn): MOCK teleports there, REAL issues SET_POSE at that pose (the robot must physically stand there)">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3"/><path d="M4.5 5v4h4"/></svg>
+            <span>Reset robot to start</span>
+          </button>
+          <p class="hint" id="reset-start-hint">Our start pose: -</p>
+        </div>
+      </section>
+
+      <section class="card">
+        <h3>Zone colours <small>- map rendering</small></h3>
+        <label class="color-row"><span>Yellow team</span><span class="color-pick"><input id="zone-color-yellow" type="color" value="#efc13c"/><span class="color-hex" data-hex="zone-color-yellow">#EFC13C</span></span></label>
+        <label class="color-row"><span>Blue team</span><span class="color-pick"><input id="zone-color-blue" type="color" value="#4b7bec"/><span class="color-hex" data-hex="zone-color-blue">#4B7BEC</span></span></label>
+        <p class="hint">Each zone is painted in its team's colour; a primary zone also draws the robot spawn marker (position + heading). The colours are saved with the map.</p>
+      </section>
+
+      </div><!-- /settings-map -->
 
       <div class="settings-page hidden" id="settings-calibration" role="tabpanel" aria-labelledby="settings-tab-calibration" hidden>
       <section class="card calib-test">
@@ -932,6 +1133,6 @@
     </aside>
   </main>
 
-  <script src="js/app.js?v=74"></script>
+  <script src="js/app.js?v=97"></script>
 </body>
 </html>

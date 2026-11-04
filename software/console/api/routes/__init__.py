@@ -5,6 +5,8 @@ calls are serialized by the client lock and manual commands are refused while
 a plan is executing (``deps.require_no_execution``).
 
 * ``system``     - health, link mode, state, field, pose, board log, display, I2C trace
+* ``map``        - table size, background artwork, team starting zones
+* ``game``       - match clock status / start / reset
 * ``motion``     - manual moves, execution control, E-STOP
 * ``planning``   - plan / re-plan, last plan
 * ``settings``   - limits, watchdog, board settings registers
@@ -22,6 +24,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
+from .game import router as game_router
+from .map import router as map_router
 from .motion import router as motion_router
 from .planning import router as planning_router
 from .selftest import router as selftest_router
@@ -32,6 +36,8 @@ from .system import router as system_router
 
 router = APIRouter()
 router.include_router(system_router)
+router.include_router(map_router)
+router.include_router(game_router)
 router.include_router(motion_router)
 router.include_router(planning_router)
 router.include_router(settings_router)

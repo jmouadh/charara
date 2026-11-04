@@ -29,7 +29,7 @@ services:
       I2C_ADDRESS: ${I2C_ADDRESS:-0x0A}
       FIELD_WIDTH_MM: ${FIELD_WIDTH_MM:-3000}
       FIELD_HEIGHT_MM: ${FIELD_HEIGHT_MM:-2000}
-      DEFAULT_SPEED_MM_S: ${DEFAULT_SPEED_MM_S:-200}
+      DEFAULT_SPEED_MM_S: ${DEFAULT_SPEED_MM_S:-350}
       TELEMETRY_HZ: ${TELEMETRY_HZ:-10}
       # Optional sensor fusion (Docs/09); absent hardware is fine.
       CAMERA_POSES: ${CAMERA_POSES:-1}
@@ -53,6 +53,8 @@ services:
       - /dev/i2c-6:/dev/i2c-6
     volumes:
       - strategies:/data/strategies
+      # map document: table size, background artwork choice, start zones
+      - mapdata:/data/map
     ports:
       - "8000:8000"
 
@@ -135,3 +137,4 @@ services:
 
 volumes:
   strategies:
+  mapdata:

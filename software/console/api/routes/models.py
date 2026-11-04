@@ -55,11 +55,17 @@ class GoalIn(BaseModel):
 
 class ObstacleIn(BaseModel):
     kind: str = "rect"
+    #: "permanent" (fixed table fixture) or "game_element" (movable piece)
+    type: str = "permanent"
+    #: unique identifier of a game element (required for that type)
+    name: Optional[str] = None
     x: float = 0.0
     y: float = 0.0
     w: float = 0.0
     h: float = 0.0
     r: float = 0.0
+    #: polygon shape: the vertices in order (the console closes the outline)
+    points: List[List[float]] = Field(default_factory=list)
 
 
 class PlanIn(BaseModel):
@@ -196,6 +202,22 @@ class TeamIn(BaseModel):
 
 class ConfigWriteIn(BaseModel):
     values: Dict[str, Any]  # settings key -> engineering value
+
+
+class MapIn(BaseModel):
+    """Partial map document (``PUT /api/map``).
+
+    Omitted fields keep their stored value; ``background`` = '' means "use
+    the automatic artwork". The service normalises everything else (clamps
+    zones to the table, a spawn inside its zone, drops unknown teams).
+    """
+
+    field: Optional[Dict[str, float]] = None
+    background: Optional[str] = None
+    colors: Optional[Dict[str, str]] = None
+    zones: Optional[List[Dict[str, Any]]] = None
+    #: match clock + timed actions (duration_s, warning_s, actions[])
+    game: Optional[Dict[str, Any]] = None
 
 
 class StrategyIn(BaseModel):

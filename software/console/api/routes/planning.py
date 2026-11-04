@@ -13,6 +13,7 @@ from typing import Dict
 from fastapi import APIRouter, HTTPException
 
 from software.core.mission.orchestrator import execute_plan
+from software.core.world.obstacles import normalize_obstacles
 
 from ...runtime.state import state
 from .deps import to_dict
@@ -37,8 +38,8 @@ async def make_plan(body: PlanIn) -> Dict:
     if not elements and body.strokes:
         elements = [{"kind": "stroke", "points": stroke} for stroke in body.strokes]
     goal = to_dict(body.goal) if body.goal else None
-    obstacles = [to_dict(obstacle) for obstacle in body.obstacles]
     try:
+        obstacles = normalize_obstacles([to_dict(obstacle) for obstacle in body.obstacles])
         return await execute_plan(state, elements, goal, obstacles, body.options, body.deadman_ms)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
